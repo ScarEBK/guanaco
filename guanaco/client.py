@@ -214,18 +214,70 @@ class OllamaClient:
         return cloud_models
 
     def _get_model_capabilities(self, model_name: str) -> list[str]:
-        """Get known capabilities for a model name."""
+        """Get known capabilities for a model name. Falls back to name-based inference."""
         base_name = model_name.split(":")[0].replace("-cloud", "")
         if base_name in KNOWN_CLOUD_MODELS:
             return KNOWN_CLOUD_MODELS[base_name].get("capabilities", ["cloud"])
-        # Default capabilities for unknown models
-        return ["cloud"]
+        # ── Inference for unknown new models ──
+        lc = base_name.lower()
+        caps = ["cloud"]
+        # vision: VL models, gemma, gemini, kimi, deepseek (frontier), anything with "vision" in name
+        if any(k in lc for k in ("vl", "vision", "gemma", "gemini", "deepseek")) or lc.startswith("kimi-"):
+            caps.append("vision")
+        # tools: explicit coder/minimax/glm/mistral/gpt-oss/devstral/nemotron families, deepseek
+        if any(k in lc for k in ("coder", "minimax", "glm-", "mistral", "ministral",
+                                  "gpt-oss", "devstral", "nemotron", "deepseek", "rnj-1")):
+            caps.append("tools")
+        # thinking: deepseek, cogito, reasoning, think suffixes, kimi-k2* except k2.5/2.6, any kimi-k* with large sizes
+        if any(k in lc for k in ("deepseek", "cogito", "reason", "-thinking", "think")):
+            caps.append("thinking")
+        elif lc.startswith("kimi-k") and not ("k2.5" in lc or "k2.6" in lc):
+            # kimi-k2 (1t) and future kimi-k3, k4 etc are reasoning models
+            caps.append("thinking")
+        # Deduplicate and sort for consistency
+        return sorted(set(caps))
 
     def _get_model_multiplier(self, model_name: str) -> float:
-        """Get usage multiplier (cost tier) for a model name. 0.25, 0.50, 0.75, 1.00."""
+        """Get usage multiplier (cost tier) for a model name. Falls back to size-based inference."""
         base_name = model_name.split(":")[0].replace("-cloud", "")
         if base_name in KNOWN_CLOUD_MODELS:
             return KNOWN_CLOUD_MODELS[base_name].get("usage_multiplier", 1.00)
+        # ── Inference from parameter size hints in the name ──
+        lc = base_name.lower()
+        # Extract size hint like ":30b" or "-30b" from the full model name
+        size_match = None
+        for part in model_name.replace("-cloud", "").split(":"):
+            m = __import__("re").search(r"(\d+)(b|t)", part, __import__("re").I)
+            if m:
+                num = int(m.group(1))
+                unit = m.group(2).lower()
+                # If unit is 't' (trillion), treat as very large
+                if unit == "t":
+                    return 1.00
+                size_match = num
+                break
+        if size_match is not None:
+            if size_match <= 20:
+                return 0.25
+            elif size_match <= 80:
+                return 0.50
+            elif size_match <= 400:
+                return 0.75
+            else:
+                return 1.00
+        # Fallback: use name heuristics when no size hint
+        if any(k in lc for k in ("nano", "mini", "small", "rnj-1")):
+            return 0.25
+        if any(k in lc for k in ("flash", "gemma", "gpt-oss", "minimax", "devstral-small",
+                                  "glm-4.", "super")):
+            return 0.50
+        if any(k in lc for k in ("kimi-k", "qwen3-vl", "qwen3-coder", "qwen3-next",
+                                  "devstral-2", "glm-5")):
+            return 0.75
+        if any(k in lc for k in ("pro", "qwen3.5", "deepseek-v3", "mistral-large",
+                                  "cogito", "kimi-k2:1t")):
+            return 1.00
+        # Safest default — unknown might be expensive
         return 1.00
 
     # ── Usage / Quota ──

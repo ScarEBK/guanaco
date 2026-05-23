@@ -2079,10 +2079,25 @@ function _getCapabilities(modelName) {
         'kimi-k2.5': ['cloud','tools','thinking','vision'],
         'cogito-2.1': ['cloud','thinking'],
     };
-    return known[base] || ['cloud'];
+    if (known[base]) return known[base];
+    // ── Inference for unknown models ──
+    const lc = base.toLowerCase();
+    const caps = ['cloud'];
+    if (lc.includes('vl') || lc.includes('vision') || lc.includes('gemma') || lc.includes('gemini') || lc.includes('deepseek') || lc.startsWith('kimi-'))
+        caps.push('vision');
+    if (lc.includes('coder') || lc.includes('minimax') || lc.startsWith('glm-') || lc.includes('mistral') ||
+        lc.includes('ministral') || lc.includes('gpt-oss') || lc.includes('devstral') || lc.includes('nemotron') || lc.includes('deepseek') || lc.includes('rnj-1'))
+        caps.push('tools');
+    if (lc.includes('deepseek') || lc.includes('cogito') || lc.includes('reason') || lc.includes('-thinking') || lc.includes('think'))
+        caps.push('thinking');
+    else if (lc.startsWith('kimi-k') && !(lc.includes('k2.5') || lc.includes('k2.6')))
+        caps.push('thinking');
+    // deduplicate
+    return [...new Set(caps)].sort();
 }
 
 function _getMultiplier(modelName) {
+    const base = modelName.split(':')[0];
     const mults = {
         'nemotron-3-nano': 0.25, 'ministral-3': 0.25, 'rnj-1': 0.25,
         'gemma4': 0.50, 'gemma3': 0.50, 'minimax-m2.7': 0.50, 'minimax-m2.5': 0.50, 'minimax-m2.1': 0.50, 'minimax-m2': 0.50,
@@ -2095,7 +2110,28 @@ function _getMultiplier(modelName) {
         'mistral-large-3': 1.00, 'cogito-2.1': 1.00, 'kimi-k2': 1.00,
         'deepseek-v4-flash': 0.50, 'gemini-3-flash-preview': 0.50,
     };
-    return mults[modelName.split(':')[0]] || 0.75;
+    if (mults[base]) return mults[base];
+    // ── Inference from size hint ──
+    const m = modelName.match(/(\d+)(b|t)/i);
+    if (m) {
+        const num = parseInt(m[1], 10);
+        const unit = m[2].toLowerCase();
+        if (unit === 't') return 1.00;
+        if (num <= 20) return 0.25;
+        if (num <= 80) return 0.50;
+        if (num <= 400) return 0.75;
+        return 1.00;
+    }
+    // ── Fallback heuristics ──
+    const lc = base.toLowerCase();
+    if (lc.includes('nano') || lc.includes('mini') || lc.includes('small') || lc.includes('rnj-1')) return 0.25;
+    if (lc.includes('flash') || lc.includes('gemma') || lc.includes('gpt-oss') || lc.includes('minimax') ||
+        lc.includes('devstral-small') || lc.includes('glm-4.') || lc.includes('super')) return 0.50;
+    if (lc.includes('kimi-k') || lc.includes('qwen3-vl') || lc.includes('qwen3-coder') || lc.includes('qwen3-next') ||
+        lc.includes('devstral-2') || lc.includes('glm-5')) return 0.75;
+    if (lc.includes('pro') || lc.includes('qwen3.5') || lc.includes('deepseek-v3') || lc.includes('mistral-large') ||
+        lc.includes('cogito')) return 1.00;
+    return 0.75;
 }
 
 // ─── Init ───
