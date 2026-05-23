@@ -1228,4 +1228,72 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         except Exception as e:
             return {"source": "error", "error": str(e)}
 
+    # ── ROI / Subscription Value Calculator (Experimental) ──
+
+    @router.get("/api/roi/config")
+    async def get_roi_config(request: Request):
+        config = get_config()
+        rc = config.roi
+        return {
+            "enabled": rc.enabled,
+            "subscription_price": rc.subscription_price,
+            "last_price_cache": rc.last_price_cache,
+            "last_roi_calc": rc.last_roi_calc,
+            "price_entries_cached": len(rc.cached_prices),
+        }
+
+    @router.post("/api/roi/config")
+    async def set_roi_config(request: Request):
+        body = await request.json()
+        config = get_config()
+        if "enabled" in body:
+            config.roi.enabled = bool(body["enabled"])
+        if "subscription_price" in body:
+            config.roi.subscription_price = float(body["subscription_price"])
+        save_config(config)
+        return {"status": "ok", "enabled": config.roi.enabled, "subscription_price": config.roi.subscription_price}
+
+    @router.get("/api/roi/calculate")
+    async def roi_calculate(request: Request):
+        """Run a fresh ROI calculation using current analytics DB and latest OpenRouter prices."""
+        config = get_config()
+        if not config.roi.enabled:
+            return {"error": "ROI feature is not enabled. Toggle it in the Status tab."}
+
+        # Determine plan and price from config
+        sub_price = config.roi.subscription_price or 20.0
+        weekly_pct = config.usage.last_weekly_pct or 0.0
+
+        db_path = analytics.db_path if hasattr(analytics, "db_path") else None
+        if db_path is None:
+            return {"error": "Analytics DB path unavailable"}
+
+        from guanaco.roi import calculate_roi
+        result = calculate_roi(db_path, subscription_monthly=sub_price, weekly_pct_used=weekly_pct)
+
+        # Persist to config
+        config.roi.last_roi_detail = result
+        config.roi.last_roi_calc = time.time()
+        save_config(config)
+        return result
+
+    @router.get("/api/roi/last")
+    async def roi_last(request: Request):
+        """Return the last calculated ROI (cached)."""
+        config = get_config()
+        if not config.roi.enabled:
+            return {"error": "ROI feature is not enabled"}
+        return config.roi.last_roi_detail or {"error": "No ROI calculated yet. Run Calculate first."}
+
+    @router.post("/api/roi/reset")
+    async def roi_reset(request: Request):
+        """Reset ROI data collection by clearing the last calculation and any cached prices."""
+        config = get_config()
+        config.roi.last_roi_detail = {}
+        config.roi.last_roi_calc = 0.0
+        config.roi.cached_prices = {}
+        config.roi.last_price_cache = 0.0
+        save_config(config)
+        return {"status": "ok", "message": "ROI data reset."}
+
     return router

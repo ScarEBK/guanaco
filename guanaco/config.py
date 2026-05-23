@@ -147,12 +147,18 @@ class UsageConfig(BaseModel):
     check_interval: int = 0                   # Auto-check interval in seconds (0 = disabled)
     last_session_pct: Optional[float] = None  # Last known session usage %
     last_weekly_pct: Optional[float] = None   # Last known weekly usage %
-    last_plan: Optional[str] = None            # Last known plan name
-    last_session_reset: Optional[str] = None   # e.g. "Resets in 7 minutes"
-    last_weekly_reset: Optional[str] = None    # e.g. "Resets in 3 days"
-    last_checked: Optional[float] = None       # Unix timestamp of last successful check
-    redirect_on_full: bool = False             # Route all requests to fallback when quota is near limit
 
+class ROIConfig(BaseModel):
+    """Experimental: subscription value comparison vs OpenRouter pay-as-you-go."""
+    enabled: bool = False                # Opt-in — must be explicitly enabled
+    # Subscription tier: free (no value calc — just usage estimate), pro=20, max=100
+    subscription_price: float = 0.0         # Monthly subscription cost in USD
+    # OpenRouter prices are fetched live; this caches them for 1 hour
+    last_price_cache: float = 0.0           # Unix timestamp of last OpenRouter fetch
+    cached_prices: dict[str, dict] = Field(default_factory=dict)  # model_slug -> {prompt, completion}
+    # Last calculated ROI summary (for dashboard display)
+    last_roi_calc: float = 0.0              # Unix timestamp
+    last_roi_detail: dict = Field(default_factory=dict)  # cached summary dict
 
 class OllamaAccount(BaseModel):
     """A single Ollama Cloud account with its own API key and usage tracking."""
@@ -177,6 +183,7 @@ class AppConfig(BaseModel):
     providers: AllProvidersConfig = Field(default_factory=AllProvidersConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     usage: UsageConfig = Field(default_factory=UsageConfig)
+    roi: ROIConfig = Field(default_factory=ROIConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
 
