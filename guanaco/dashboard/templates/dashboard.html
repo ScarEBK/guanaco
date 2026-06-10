@@ -64,6 +64,11 @@
     .cap.vision { background: rgba(6,182,212,0.15); color: var(--cyan); }
     .cap.tools { background: rgba(124,58,237,0.15); color: var(--accent); }
     .cap.thinking { background: rgba(245,158,11,0.15); color: var(--orange); }
+    /* Usage multiplier bars */
+    .usage-bar { display: flex; align-items: center; gap: 3px; margin-top: 6px; }
+    .usage-slot { display: inline-block; height: 3px; width: 10px; border-radius: 2px; background: var(--border); }
+    .usage-slot.usage-active { background: var(--accent); }
+    .usage-label { font-size: 10px; color: var(--text2); margin-left: 3px; }
     .model-select-btn { background: var(--accent); color: white; border: none; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; margin-top: 8px; }
     .model-select-btn:hover { opacity: 0.9; }
 
@@ -102,7 +107,7 @@
     .metric .metric-val { font-size: 22px; font-weight: 700; color: var(--accent); }
     .metric .metric-label { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
 
-    .usage-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
+    .usage-row { display: grid; grid-template-columns: 2fr 0.8fr 1.2fr 1.2fr 1fr 0.8fr 0.8fr; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
     .usage-row.header { font-weight: 600; color: var(--text2); }
     .usage-bar-track { width: 100%; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
     .usage-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease, background 0.3s ease; }
@@ -419,7 +424,7 @@
                 </div>
             </div>
             <div class="usage-row header">
-                <div>Model</div><div>Requests</div><div>Prompt Tok</div><div>Comp Tok</div><div>Avg TPS</div><div>Avg TTFT</div>
+                <div>Model</div><div>Reqs</div><div>Prompt</div><div>Comp</div><div>Total</div><div>Avg TPS</div><div>Avg TTFT</div>
             </div>
             <div id="model-rows"></div>
         </div>
@@ -540,6 +545,7 @@
                 <div style="margin:0 0 8px 0;">
                     <div class="usage-bar-track"><div class="usage-bar-fill" id="usage-session-bar" style="width:0%;"></div></div>
                     <div class="usage-reset" id="usage-session-reset"></div>
+                    <div id="usage-session-breakdown" style="margin-top:6px;font-size:11px;"></div>
                 </div>
                 <div class="status-row">
                     <span class="status-label">Weekly Usage</span>
@@ -548,6 +554,7 @@
                 <div style="margin:0 0 8px 0;">
                     <div class="usage-bar-track"><div class="usage-bar-fill" id="usage-weekly-bar" style="width:0%;"></div></div>
                     <div class="usage-reset" id="usage-weekly-reset"></div>
+                    <div id="usage-weekly-breakdown" style="margin-top:6px;font-size:11px;"></div>
                 </div>
                 <div class="status-row" id="usage-last-checked-row" style="display:none;"><span class="status-label" style="color:var(--text2);">Last Checked</span><span class="status-value" id="usage-last-checked" style="color:var(--text2);font-size:11px;"></span></div>
             </div>
@@ -578,6 +585,100 @@
                     </label>
                     <span id="redirect-on-full-status" style="font-size:11px;color:var(--text2);"></span>
                 </div>
+            </div>
+        </div>
+
+        <!-- ROI Calculator Card -->
+        <div class="card" id="roi-card" style="display:none;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h2 style="margin:0;"><span class="emoji">💰</span> Subscription Value <span style="font-size:11px;background:#f59e0b;color:#000;padding:2px 6px;border-radius:4px;margin-left:6px;">EXPERIMENTAL</span></h2>
+                <button class="refresh-btn" onclick="calculateROI()">🔄 Calculate</button>
+            </div>
+            <p style="font-size:12px;color:var(--text2);margin-bottom:12px;">
+                Compares your Ollama subscription vs pay-as-you-go pricing on OpenRouter.
+                Shows per-model $/Mt cost and total value you get.
+            </p>
+            <!-- ROI Toggle -->
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px;background:var(--surface2);border-radius:8px;">
+                <label style="font-size:13px;color:var(--text);white-space:nowrap;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                    <input type="checkbox" id="roi-enabled" onchange="toggleROI()" style="accent-color:var(--accent);">
+                    Enable ROI calculator
+                </label>
+                <select id="roi-plan" onchange="setROIPlan()" style="background:var(--surface3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:12px;">
+                    <option value="20">Pro ($20/mo)</option>
+                    <option value="100">Max ($100/mo)</option>
+                    <option value="0">Custom</option>
+                </select>
+                <input type="number" id="roi-custom-price" placeholder="Custom $/mo" style="width:80px;background:var(--surface3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:12px;" disabled>
+                <button class="btn btn-sm btn-outline" onclick="resetROIData()" style="margin-left:auto;">Reset Data</button>
+            </div>
+            <!-- Cache Hit Slider -->
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:10px;background:var(--surface2);border-radius:8px;">
+                <label style="font-size:12px;color:var(--text);white-space:nowrap;">
+                    Est. prompt cache hit
+                    <span style="color:var(--text2);margin-left:4px;" id="cache-hit-value">0%</span>
+                </label>
+                <input type="range" id="cache-hit-slider" min="0" max="100" value="0" oninput="updateCacheHitDisplay()" onchange="setCacheHit()" style="flex:1;accent-color:var(--accent);">
+                <span style="font-size:11px;color:var(--text2);max-width:220px;">Models with OpenRouter cache pricing get discounted accordingly</span>
+            </div>
+
+            <!-- Results -->
+            <div id="roi-results" style="display:none;">
+                <!-- Summary strip -->
+                <div class="metric-grid" style="margin-bottom:12px;">
+                    <div class="metric"><div class="metric-val" id="roi-total-cost">$0</div><div class="metric-label">This Week Cost</div></div>
+                    <div class="metric"><div class="metric-val" id="roi-weekly">$0</div><div class="metric-label">Weekly @ 100%</div></div>
+                    <div class="metric"><div class="metric-val" id="roi-monthly">$0</div><div class="metric-label">Monthly Value</div></div>
+                    <div class="metric"><div class="metric-val" id="roi-mult">0x</div><div class="metric-label">ROI Multiplier</div></div>
+                    <div class="metric"><div class="metric-val" id="roi-total-tokens">0</div><div class="metric-label">Total Tokens</div></div>
+                </div>
+
+                <!-- Subscription comparison -->
+                <div style="padding:10px;background:var(--surface2);border-radius:8px;margin-bottom:12px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:6px;">
+                        <span>Subscription cost</span>
+                        <span id="roi-sub-cost">$0</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:6px;">
+                        <span>Estimated value</span>
+                        <span style="color:var(--accent);font-weight:600;" id="roi-est-value">$0</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;">
+                        <span>Savings vs OpenRouter</span>
+                        <span style="color:var(--success);font-weight:600;" id="roi-savings">$0</span>
+                    </div>
+                </div>
+
+                <!-- Per-model table -->
+                <div style="margin-bottom:8px;">
+                    <strong style="font-size:13px;">Per-Model Breakdown</strong>
+                    <span id="roi-weekly-pct" style="font-size:11px;color:var(--text2);margin-left:8px;"></span>
+                </div>
+                <div class="usage-row header" style="grid-template-columns: 2fr 1fr 1fr 1fr 1fr 0.8fr;">
+                    <div>Model</div><div>$ In/Mt</div><div>$ Out/Mt</div><div>Cost</div><div>%</div><div>Tokens</div>
+                </div>
+                <div id="roi-model-rows"></div>
+
+                <!-- Model Value Comparison (score per model) -->
+                <div style="margin-top:16px;margin-bottom:8px;">
+                    <strong style="font-size:13px;">Model Value Score</strong>
+                    <span style="font-size:11px;color:var(--text2);margin-left:8px;">Positive = model gave more value than its fair share of sub cost</span>
+                </div>
+                <div class="usage-row header" style="grid-template-columns: 2fr 1fr 1fr 1.2fr 1.2fr 1fr;">
+                    <div>Model</div><div>Reqs</div><div>Tokens</div><div>Value</div><div>Fair Share</div><div>Score</div>
+                </div>
+                <div id="roi-comparison-rows"></div>
+                <div id="roi-comparison-summary" style="margin-top:8px;padding:8px 10px;border-radius:6px;font-size:12px;background:var(--surface2);display:none;"></div>
+
+                <div id="roi-unmatched" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:11px;background:#f59e0b22;color:#f59e0b;"></div>
+                <div id="roi-stale" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:11px;background:var(--danger);color:#fff;">⚠ OpenRouter prices unavailable. Showing stale/cached data.</div>
+            </div>
+
+            <div id="roi-loading" style="display:none;text-align:center;padding:20px;color:var(--text2);">
+                Fetching OpenRouter prices...
+            </div>
+            <div id="roi-disabled-msg" style="color:var(--text2);font-size:12px;padding:20px 0;text-align:center;">
+                Enable the ROI calculator above to see subscription value estimates.
             </div>
         </div>
 
@@ -810,7 +911,7 @@ function showTab(tab) {
     if (tab === 'cache') loadCacheStats();
     if (tab === 'analytics') loadAnalytics();
     if (tab === 'history') { loadHistoryConfig(); loadHistory(); loadHistoryLogs(); }
-    if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); }
+    if (tab === 'status') { checkOllamaStatus(); loadUsageConfig(); checkUsage(); loadStatusLog(); loadROIConfig(); }
     if (tab === 'accounts') { loadAccounts(); checkAllAccountUsage(); }
     if (tab === 'system') { loadAutostart(); checkForUpdate(); }
 }
@@ -1208,7 +1309,7 @@ function loadModels() {
         // Fallback to config model list when API is down
         const cfg = CONFIG.llm || {};
         const names = cfg.available_models || [];
-        const fallbackModels = names.map(n => ({name: n, model: n, id: n, capabilities: _getCapabilities(n)}));
+        const fallbackModels = names.map(n => ({name: n, model: n, id: n, capabilities: _getCapabilities(n), usage_multiplier: _getMultiplier(n)}));
         availableModels = fallbackModels;
         document.getElementById('models-loading').style.display = 'none';
         document.getElementById('models-loading').textContent = '';
@@ -1237,6 +1338,9 @@ function renderModels(models) {
         const paramSize = details.parameter_size || '';
         const quant = details.quantization_level || '';
         const caps = m.capabilities || ['cloud'];
+        const mult = typeof m.usage_multiplier === 'number' ? m.usage_multiplier : (m.usage_multiplier || 0.75);
+        const filled = Math.round(mult * 4); // 4 slots, 0.25 = 1 filled, 1.00 = 4 filled
+        const slots = [0,1,2,3].map(i => `<span class="usage-slot ${i < filled ? 'usage-active' : ''}"></span>`).join('');
         const capHtml = caps.map(c => `<span class="cap ${c}">${c}</span>`).join('');
         return `<div class="model-card">
             <div class="model-name">${display}</div>
@@ -1246,6 +1350,7 @@ function renderModels(models) {
                 ${quant ? `<span>⚡ ${quant}</span>` : ''}
             </div>
             <div class="model-caps">${capHtml}</div>
+            <div class="usage-bar" title="Usage cost multiplier: ${mult.toFixed(2)}x">${slots}<span class="usage-label">${mult.toFixed(2)}x</span></div>
         </div>`;
     }).join('');
 }
@@ -1332,6 +1437,7 @@ function loadAnalytics() {
                     <div>${m.requests}</div>
                     <div>${(m.prompt_tokens || 0).toLocaleString()}</div>
                     <div>${(m.completion_tokens || 0).toLocaleString()}</div>
+                    <div>${((m.prompt_tokens || 0) + (m.completion_tokens || 0)).toLocaleString()}</div>
                     <div>${m.avg_tps || '—'}</div>
                     <div>${m.avg_ttft ? (m.avg_ttft * 1000).toFixed(0) + 'ms' : '—'}</div>
                 </div>
@@ -1359,9 +1465,10 @@ function loadAnalytics() {
             </div>
         `).join('') : '<div style="color:var(--text2);text-align:center;padding:20px;">No errors 🎉</div>';
 
-        // Top stats
+        // Top stats — show raw tokens as primary count
         document.getElementById('stat-requests').textContent = (data.total_requests || 0).toLocaleString();
-        document.getElementById('stat-tokens').textContent = ((data.prompt_tokens || 0) + (data.completion_tokens || 0)).toLocaleString();
+        document.getElementById('stat-tokens').textContent = (data.total_tokens || 0).toLocaleString();
+        document.getElementById('stat-tokens').nextElementSibling.textContent = 'Tokens';
         document.getElementById('stat-tps').textContent = data.avg_tps || 0;
         document.getElementById('stat-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
         document.getElementById('stat-keys').textContent = KEYS.length;
@@ -1679,6 +1786,8 @@ function checkUsage() {
     const weeklyBar = document.getElementById('usage-weekly-bar');
     const sessionReset = document.getElementById('usage-session-reset');
     const weeklyReset = document.getElementById('usage-weekly-reset');
+    const sessionBreakdown = document.getElementById('usage-session-breakdown');
+    const weeklyBreakdown = document.getElementById('usage-weekly-breakdown');
     const lastCheckedRow = document.getElementById('usage-last-checked-row');
     const lastCheckedEl = document.getElementById('usage-last-checked');
     planEl.textContent = 'Loading...';
@@ -1693,6 +1802,8 @@ function checkUsage() {
             weeklyBar.style.width = '0%';
             sessionReset.textContent = '';
             weeklyReset.textContent = '';
+            sessionBreakdown.innerHTML = '';
+            weeklyBreakdown.innerHTML = '';
             lastCheckedRow.style.display = 'none';
         } else {
             const plan = data.plan ? data.plan.charAt(0).toUpperCase() + data.plan.slice(1) : '—';
@@ -1715,6 +1826,72 @@ function checkUsage() {
             // Reset timers
             sessionReset.textContent = data.session_reset ? '⏱ Resets in ' + data.session_reset : '';
             weeklyReset.textContent = data.weekly_reset ? '⏱ Resets in ' + data.weekly_reset : '';
+            // Per-model breakdowns
+            function renderBreakdown(breakdown, container, idSuffix) {
+                if (!breakdown || breakdown.length === 0) {
+                    container.innerHTML = '';
+                    return;
+                }
+                // Sort by percentage descending
+                const sorted = [...breakdown].sort((a, b) => b.pct - a.pct);
+                
+                // Separate significant vs tiny
+                const significant = [];
+                const tiny = [];
+                for (const b of sorted) {
+                    if (b.pct >= 1.0) {
+                        significant.push(b);
+                    } else {
+                        tiny.push(b);
+                    }
+                }
+                
+                // Always show top 3 at minimum, even if tiny
+                while (significant.length < 3 && tiny.length > 0) {
+                    significant.push(tiny.shift());
+                }
+                
+                const hasMore = tiny.length > 0;
+                const all = [...significant, ...tiny];
+                
+                function makeRow(b, hidden) {
+                    const pctStr = b.pct >= 0.1 ? b.pct.toFixed(1) + '%' : '< 0.1%';
+                    return `
+                        <div class="ub-row ${hidden ? 'ub-hidden' : ''}" style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:11px;border-bottom:1px solid var(--surface2);">
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%;font-family:monospace;font-size:10px;">${b.model}</span>
+                            <span style="color:var(--text2);font-variant-numeric:tabular-nums;">${b.requests.toLocaleString()} req · ${pctStr}</span>
+                        </div>
+                    `;
+                }
+                
+                const topHtml = significant.map(b => makeRow(b, false)).join('');
+                const restHtml = tiny.map(b => makeRow(b, true)).join('');
+                
+                const expandId = 'ub-expand-' + idSuffix;
+                const collapseId = 'ub-collapse-' + idSuffix;
+                
+                container.innerHTML = `
+                    <style>
+                        .ub-row.ub-hidden { display: none !important; }
+                    </style>
+                    <div style="margin-top:6px;">
+                        ${topHtml}
+                        <div id="${expandId}" style="${hasMore ? '' : 'display:none;'}margin-top:4px;">
+                            <button onclick="document.getElementById('${expandId}').style.display='none';document.getElementById('${collapseId}').style.display='';document.querySelectorAll('#${container.id} .ub-row.ub-hidden').forEach(r=>r.classList.remove('ub-hidden'));" style="background:transparent;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:2px 0;">
+                                Show ${tiny.length} more →
+                            </button>
+                        </div>
+                        <div id="${collapseId}" style="display:none;margin-top:4px;">
+                            ${restHtml}
+                            <button onclick="document.getElementById('${expandId}').style.display='';document.getElementById('${collapseId}').style.display='none';document.querySelectorAll('#${container.id} .ub-row:not(.ub-hidden)').forEach((r,i)=>{if(i>=${significant.length-1})r.classList.add('ub-hidden');});" style="background:transparent;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:2px 0;">
+                                ← Collapse
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+            renderBreakdown(data.session_breakdown, sessionBreakdown, 'session');
+            renderBreakdown(data.weekly_breakdown, weeklyBreakdown, 'weekly');
             // Last checked
             if (data.last_checked) {
                 lastCheckedRow.style.display = '';
@@ -1772,6 +1949,8 @@ function clearSessionCookie() {
             document.getElementById('usage-weekly-bar').style.width = '0%';
             document.getElementById('usage-session-reset').textContent = '';
             document.getElementById('usage-weekly-reset').textContent = '';
+            document.getElementById('usage-session-breakdown').innerHTML = '';
+            document.getElementById('usage-weekly-breakdown').innerHTML = '';
         }
         setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 3000);
     });
@@ -2035,20 +2214,82 @@ function _getCapabilities(modelName) {
         'gpt-oss': ['cloud','tools','thinking'],
         'deepseek-v3.1': ['cloud','thinking'],
         'deepseek-v3.2': ['cloud','thinking'],
+        'deepseek-v4-pro': ['cloud','tools','thinking','vision'],
+        'deepseek-v4-flash': ['cloud','tools','thinking','vision'],
+        'gemini-3-flash-preview': ['cloud','tools','thinking','vision'],
         'glm-5.1': ['cloud','tools','thinking'],
         'glm-5': ['cloud','tools','thinking'],
         'minimax-m2.7': ['cloud','tools','thinking'],
         'minimax-m2.5': ['cloud','tools','thinking'],
         'minimax-m2.1': ['cloud','tools','thinking'],
+        'minimax-m2': ['cloud','tools','thinking'],
+        'minimax-m3': ['cloud','tools','thinking','vision'],
         'devstral-small-2': ['cloud','tools'],
         'devstral-2': ['cloud','tools'],
         'nemotron-3-super': ['cloud','tools','thinking'],
+        'nemotron-3-nano': ['cloud','tools','thinking'],
+        'nemotron-3-ultra': ['cloud','tools','thinking'],
         'mistral-large-3': ['cloud','tools','thinking'],
         'ministral-3': ['cloud','tools'],
+        'kimi-k2.6': ['cloud','tools','thinking','vision'],
         'kimi-k2.5': ['cloud','tools','thinking','vision'],
         'cogito-2.1': ['cloud','thinking'],
     };
-    return known[base] || ['cloud'];
+    if (known[base]) return known[base];
+    // ── Inference for unknown models ──
+    const lc = base.toLowerCase();
+    const caps = ['cloud'];
+    if (lc.includes('vl') || lc.includes('vision') || lc.includes('gemma') || lc.includes('gemini') || lc.includes('deepseek') || lc.startsWith('kimi-'))
+        caps.push('vision');
+    if (lc.includes('coder') || lc.includes('minimax') || lc.startsWith('glm-') || lc.includes('mistral') ||
+        lc.includes('ministral') || lc.includes('gpt-oss') || lc.includes('devstral') || lc.includes('nemotron') || lc.includes('deepseek') || lc.includes('rnj-1'))
+        caps.push('tools');
+    if (lc.includes('deepseek') || lc.includes('cogito') || lc.includes('reason') || lc.includes('-thinking') || lc.includes('think'))
+        caps.push('thinking');
+    else if (lc.startsWith('kimi-k') && !(lc.includes('k2.5') || lc.includes('k2.6')))
+        caps.push('thinking');
+    // deduplicate
+    return [...new Set(caps)].sort();
+}
+
+function _getMultiplier(modelName) {
+    const base = modelName.split(':')[0];
+    const mults = {
+        'nemotron-3-nano': 0.25, 'ministral-3': 0.25, 'rnj-1': 0.25,
+        'gemma4': 0.50, 'gemma3': 0.50, 'minimax-m2.7': 0.50, 'minimax-m2.5': 0.50, 'minimax-m2.1': 0.50, 'minimax-m2': 0.50,
+        'gpt-oss': 0.50, 'devstral-small-2': 0.50, 'nemotron-3-super': 0.50, 'gemini-3-flash-preview': 0.50,
+        'glm-4.7': 0.50, 'glm-4.6': 0.50,
+        'qwen3-vl': 0.75, 'qwen3-coder': 0.75, 'qwen3-next': 0.75, 'devstral-2': 0.75,
+        'glm-5.1': 0.75, 'glm-5': 0.75,
+        'kimi-k2.6': 0.75, 'kimi-k2.5': 0.75, 'kimi-k2-thinking': 0.75,
+        'qwen3.5': 1.00, 'deepseek-v3.1': 1.00, 'deepseek-v3.2': 1.00, 'deepseek-v4-pro': 1.00,
+        'mistral-large-3': 1.00, 'cogito-2.1': 1.00, 'kimi-k2': 1.00,
+        'deepseek-v4-flash': 0.50, 'gemini-3-flash-preview': 0.50,
+        'minimax-m3': 0.75,
+        'nemotron-3-ultra': 1.00,
+    };
+    if (mults[base]) return mults[base];
+    // ── Inference from size hint ──
+    const m = modelName.match(/(\d+)(b|t)/i);
+    if (m) {
+        const num = parseInt(m[1], 10);
+        const unit = m[2].toLowerCase();
+        if (unit === 't') return 1.00;
+        if (num <= 20) return 0.25;
+        if (num <= 80) return 0.50;
+        if (num <= 400) return 0.75;
+        return 1.00;
+    }
+    // ── Fallback heuristics ──
+    const lc = base.toLowerCase();
+    if (lc.includes('nano') || lc.includes('mini') || lc.includes('small') || lc.includes('rnj-1')) return 0.25;
+    if (lc.includes('flash') || lc.includes('gemma') || lc.includes('gpt-oss') || lc.includes('minimax') ||
+        lc.includes('devstral-small') || lc.includes('glm-4.') || lc.includes('super')) return 0.50;
+    if (lc.includes('kimi-k') || lc.includes('qwen3-vl') || lc.includes('qwen3-coder') || lc.includes('qwen3-next') ||
+        lc.includes('devstral-2') || lc.includes('glm-5')) return 0.75;
+    if (lc.includes('pro') || lc.includes('qwen3.5') || lc.includes('deepseek-v3') || lc.includes('mistral-large') ||
+        lc.includes('cogito')) return 1.00;
+    return 0.75;
 }
 
 // ─── Init ───
@@ -2465,6 +2706,262 @@ async function toggleAutoUpdate() {
     } catch (e) {
         toggle.checked = !enabled;
     }
+}
+
+// ─── ROI Calculator (Experimental) ───
+
+let roiEnabled = false;
+let roiPrice = 20.0;
+let roiCacheHit = 0.0;
+
+function loadROIConfig() {
+    fetch('/dashboard/api/roi/config').then(r => r.json()).then(data => {
+        roiEnabled = data.enabled;
+        roiPrice = data.subscription_price || 20.0;
+        roiCacheHit = data.cache_hit_pct || 0.0;
+        document.getElementById('roi-enabled').checked = roiEnabled;
+        document.getElementById('roi-card').style.display = 'block';
+        const planSel = document.getElementById('roi-plan');
+        const customInput = document.getElementById('roi-custom-price');
+        if (roiPrice == 20) planSel.value = '20';
+        else if (roiPrice == 100) planSel.value = '100';
+        else {
+            planSel.value = '0';
+            customInput.value = roiPrice;
+            customInput.disabled = false;
+        }
+        
+        // Set cache hit slider
+        const cacheSlider = document.getElementById('cache-hit-slider');
+        const cacheValue = document.getElementById('cache-hit-value');
+        if (cacheSlider && cacheValue) {
+            cacheSlider.value = roiCacheHit;
+            cacheValue.textContent = roiCacheHit + '%';
+        }
+        
+        if (roiEnabled) {
+            document.getElementById('roi-disabled-msg').style.display = 'none';
+            calculateROI();
+        } else {
+            document.getElementById('roi-results').style.display = 'none';
+        }
+    }).catch(() => {
+        // ROI endpoints may not exist yet — hide the card
+        document.getElementById('roi-card').style.display = 'none';
+    });
+}
+
+function toggleROI() {
+    const enabled = document.getElementById('roi-enabled').checked;
+    roiEnabled = enabled;
+    const price = parseFloat(document.getElementById('roi-plan').value) || parseFloat(document.getElementById('roi-custom-price').value) || 20.0;
+    const cacheHit = roiCacheHit;
+    fetch('/dashboard/api/roi/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ enabled, subscription_price: price, cache_hit_pct: cacheHit })
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            if (enabled) {
+                document.getElementById('roi-disabled-msg').style.display = 'none';
+                calculateROI();
+            } else {
+                document.getElementById('roi-results').style.display = 'none';
+                document.getElementById('roi-disabled-msg').style.display = 'block';
+            }
+        }
+    });
+}
+
+function updateCacheHitDisplay() {
+    const val = document.getElementById('cache-hit-slider').value;
+    document.getElementById('cache-hit-value').textContent = val + '%';
+}
+
+function setCacheHit() {
+    const val = parseFloat(document.getElementById('cache-hit-slider').value) || 0;
+    roiCacheHit = val;
+    const price = parseFloat(document.getElementById('roi-plan').value) || parseFloat(document.getElementById('roi-custom-price').value) || 20.0;
+    fetch('/dashboard/api/roi/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ enabled: roiEnabled, subscription_price: price, cache_hit_pct: val })
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok' && roiEnabled) {
+            calculateROI();
+        }
+    });
+}
+
+function setROIPlan() {
+    const val = document.getElementById('roi-plan').value;
+    const custom = document.getElementById('roi-custom-price');
+    if (val === '0') {
+        custom.disabled = false;
+        custom.focus();
+    } else {
+        custom.disabled = true;
+        custom.value = '';
+        roiPrice = parseFloat(val);
+    }
+    if (roiEnabled) {
+        fetch('/dashboard/api/roi/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ enabled: true, subscription_price: roiPrice })
+        });
+    }
+}
+
+async function calculateROI() {
+    if (!roiEnabled) return;
+    const loading = document.getElementById('roi-loading');
+    const results = document.getElementById('roi-results');
+    loading.style.display = 'block';
+    results.style.display = 'none';
+    try {
+        const resp = await fetch('/dashboard/api/roi/calculate');
+        const data = await resp.json();
+        loading.style.display = 'none';
+        if (data.error) {
+            document.getElementById('roi-model-rows').innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">' + data.error + '</div>';
+            results.style.display = 'block';
+            return;
+        }
+        renderROIResults(data);
+        loadROIComparison();
+        results.style.display = 'block';
+    } catch (e) {
+        loading.style.display = 'none';
+        document.getElementById('roi-model-rows').innerHTML = '<div style="color:var(--danger);text-align:center;padding:12px;">Failed to calculate ROI</div>';
+        results.style.display = 'block';
+    }
+}
+
+function renderROIResults(data) {
+    document.getElementById('roi-total-cost').textContent = '$' + (data.total_cost || 0).toLocaleString(undefined, {maximumFractionDigits: 2});
+    document.getElementById('roi-weekly').textContent = '$' + (data.weekly_value || 0).toLocaleString(undefined, {maximumFractionDigits: 2});
+    const monthly = data.monthly_value || 0;
+    document.getElementById('roi-monthly').textContent = '$' + monthly.toLocaleString(undefined, {maximumFractionDigits: 2});
+    document.getElementById('roi-sub-cost').textContent = '$' + (data.subscription_monthly || 0).toLocaleString(undefined, {maximumFractionDigits: 0});
+    document.getElementById('roi-est-value').textContent = '$' + monthly.toLocaleString(undefined, {maximumFractionDigits: 2});
+    const savings = Math.max(0, monthly - (data.subscription_monthly || 0));
+    document.getElementById('roi-savings').textContent = '$' + savings.toLocaleString(undefined, {maximumFractionDigits: 2});
+    const mult = data.roi_multiplier || 0;
+    document.getElementById('roi-mult').textContent = mult.toFixed(1) + 'x';
+    document.getElementById('roi-mult').style.color = mult > 1 ? 'var(--success)' : (mult > 0.5 ? '#facc15' : 'var(--danger)');
+    // Use total_raw_tokens if available (new calc), otherwise sum from by_model (cached)
+    let rawTotal = data.total_raw_tokens || 0;
+    if (!rawTotal && data.by_model) {
+        rawTotal = data.by_model.reduce((s, m) => s + (m.prompt_tokens || 0) + (m.completion_tokens || 0), 0);
+    }
+    document.getElementById('roi-total-tokens').textContent = rawTotal.toLocaleString();
+
+    const rows = document.getElementById('roi-model-rows');
+    if (data.by_model && data.by_model.length > 0) {
+        rows.innerHTML = data.by_model.map(m => {
+            const pt = m.prompt_tokens || 0;
+            const ct = m.completion_tokens || 0;
+            const totalToks = pt + ct;
+            return '<div class="usage-row" style="grid-template-columns: 2fr 1fr 1fr 1fr 1fr 0.8fr; padding: 8px 14px; margin-bottom: 4px; font-size: 12px;">' +
+                   '<div>' + m.model + '</div>' +
+                   '<div>$' + (m.prompt_per_mt || 0).toFixed(4) + '</div>' +
+                   '<div>$' + (m.completion_per_mt || 0).toFixed(4) + '</div>' +
+                   '<div>$' + (m.cost || 0).toFixed(2) + '</div>' +
+                   '<div>' + (m.pct_of_total || 0).toFixed(1) + '%</div>' +
+                   '<div>' + totalToks.toLocaleString() + '</div>' +
+                   '</div>';
+        }).join('');
+    } else {
+        rows.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">No usage data yet this week</div>';
+    }
+
+    // Weekly usage %
+    const weeklyPct = data.weekly_pct_used || 0;
+    document.getElementById('roi-weekly-pct').textContent = weeklyPct > 0 ? '· Based on ' + weeklyPct.toFixed(1) + '% of weekly quota used' : '';
+
+    // Unmatched models warning
+    const unmatchedEl = document.getElementById('roi-unmatched');
+    if (data.unmatched_models && data.unmatched_models.length > 0) {
+        unmatchedEl.textContent = '⚠ Could not price: ' + data.unmatched_models.join(', ');
+        unmatchedEl.style.display = 'block';
+    } else {
+        unmatchedEl.style.display = 'none';
+    }
+
+    // Stale prices warning
+    document.getElementById('roi-stale').style.display = data.prices_stale ? 'block' : 'none';
+}
+
+// ─── Model Value Comparison ───
+
+async function loadROIComparison() {
+    if (!roiEnabled) return;
+    try {
+        const resp = await fetch('/dashboard/api/roi/comparison?period=weekly');
+        const data = await resp.json();
+        renderROIComparison(data);
+    } catch (e) {
+        document.getElementById('roi-comparison-rows').innerHTML = '<div style="color:var(--danger);text-align:center;padding:12px;">Failed to load comparison</div>';
+    }
+}
+
+function renderROIComparison(data) {
+    const rows = document.getElementById('roi-comparison-rows');
+    const summary = document.getElementById('roi-comparison-summary');
+
+    if (data.error) {
+        rows.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">' + data.error + '</div>';
+        summary.style.display = 'none';
+        return;
+    }
+
+    if (!data.models || data.models.length === 0) {
+        rows.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">No usage data for this period</div>';
+        summary.style.display = 'none';
+        return;
+    }
+
+    rows.innerHTML = data.models.map(m => {
+        const score = m.score || 0;
+        const scoreColor = score > 0 ? 'var(--success)' : (score < 0 ? 'var(--danger)' : 'var(--text2)');
+        const scoreSign = score > 0 ? '+' : '';
+        return '<div class="usage-row" style="grid-template-columns: 2fr 1fr 1fr 1.2fr 1.2fr 1fr; padding: 8px 14px; margin-bottom: 4px; font-size: 12px;">' +
+               '<div style="font-family:monospace;">' + m.model + '</div>' +
+               '<div>' + (m.requests || 0).toLocaleString() + '</div>' +
+               '<div>' + (m.total_tokens || 0).toLocaleString() + '</div>' +
+               '<div>$' + (m.actual_value || 0).toFixed(2) + '</div>' +
+               '<div>$' + (m.fair_share || 0).toFixed(2) + '</div>' +
+               '<div style="color:' + scoreColor + ';font-weight:600;">' + scoreSign + score.toFixed(2) + '</div>' +
+               '</div>';
+    }).join('');
+
+    // Summary bar
+    const net = data.net_score || 0;
+    const netColor = net > 0 ? 'var(--success)' : (net < 0 ? 'var(--danger)' : 'var(--text2)');
+    const netSign = net > 0 ? '+' : '';
+    summary.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+        '<span><strong>Period cost:</strong> $' + (data.period_sub_cost || 0).toFixed(2) + ' · <strong>Total value:</strong> $' + (data.total_actual_value || 0).toFixed(2) + '</span>' +
+        '<span style="color:' + netColor + ';font-weight:600;font-size:13px;">Net: ' + netSign + net.toFixed(2) + '</span>' +
+        '</div>';
+    summary.style.display = 'block';
+}
+
+function loadLastROI() {
+    fetch('/dashboard/api/roi/last').then(r => r.json()).then(data => {
+        if (!data.error && (data.by_model || []).length > 0) {
+            renderROIResults(data);
+            document.getElementById('roi-results').style.display = 'block';
+        }
+    }).catch(() => {});
+}
+
+function resetROIData() {
+    fetch('/dashboard/api/roi/reset', {method: 'POST'}).then(() => {
+        document.getElementById('roi-results').style.display = 'none';
+        if (roiEnabled) calculateROI();
+    });
 }
 </script>
 </body>

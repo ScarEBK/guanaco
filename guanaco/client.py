@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -20,39 +21,51 @@ OLLAMA_FETCH_URL = f"{OLLAMA_BASE}/api/web_fetch"
 OLLAMA_USAGE_URL = f"{OLLAMA_BASE}/api/account/usage"
 OLLAMA_SETTINGS_URL = f"{OLLAMA_BASE}/api/account/settings"
 
+# Usage-level cache: maps model name → level (1-4)
+_USAGE_LEVEL_CACHE: dict[str, int] = {}
+_USAGE_LEVEL_CACHE_TIME: float = 0
+_USAGE_LEVEL_CACHE_TTL: float = 3600  # 1 hour
+
 # Known cloud models (fallback + display info)
 # Names must match /v1/models response (e.g. "gemma4:31b", "qwen3.5:397b")
+# usage_multiplier: relative GPU cost tier (0.25, 0.50, 0.75, 1.00) pulled from
+# ollama.com model pages — used for weighted analytics + visual cost badges.
 KNOWN_CLOUD_MODELS = {
-    "gemma4": {"sizes": ["31b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "gemma3": {"sizes": ["4b", "12b", "27b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "qwen3.5": {"sizes": ["397b"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "qwen3-vl": {"sizes": ["235b", "235b-instruct"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "qwen3-coder": {"sizes": ["480b"], "family": "qwen", "capabilities": ["tools", "cloud"]},
-    "qwen3-coder-next": {"sizes": [], "family": "qwen", "capabilities": ["tools", "cloud"]},
-    "qwen3-next": {"sizes": ["80b"], "family": "qwen", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2.7": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2.5": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "minimax-m2.1": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-5.1": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-5": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-4.7": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "glm-4.6": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"]},
-    "gpt-oss": {"sizes": ["20b", "120b"], "family": "gpt-oss", "capabilities": ["tools", "thinking", "cloud"]},
-    "deepseek-v3.1": {"sizes": ["671b"], "family": "deepseek", "capabilities": ["thinking", "cloud"]},
-    "deepseek-v3.2": {"sizes": [], "family": "deepseek", "capabilities": ["thinking", "cloud"]},
-    "devstral-small-2": {"sizes": ["24b"], "family": "devstral", "capabilities": ["tools", "cloud"]},
-    "devstral-2": {"sizes": ["123b"], "family": "devstral", "capabilities": ["tools", "cloud"]},
-    "nemotron-3-super": {"sizes": [], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"]},
-    "nemotron-3-nano": {"sizes": ["30b"], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"]},
-    "mistral-large-3": {"sizes": ["675b"], "family": "mistral", "capabilities": ["tools", "thinking", "cloud"]},
-    "ministral-3": {"sizes": ["3b", "8b", "14b"], "family": "mistral", "capabilities": ["tools", "cloud"]},
-    "kimi-k2.5": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "kimi-k2-thinking": {"sizes": [], "family": "kimi", "capabilities": ["thinking", "cloud"]},
-    "kimi-k2": {"sizes": ["1t"], "family": "kimi", "capabilities": ["tools", "thinking", "cloud"]},
-    "cogito-2.1": {"sizes": ["671b"], "family": "cogito", "capabilities": ["thinking", "cloud"]},
-    "gemini-3-flash-preview": {"sizes": [], "family": "gemini", "capabilities": ["vision", "tools", "thinking", "cloud"]},
-    "rnj-1": {"sizes": ["8b"], "family": "rnj", "capabilities": ["tools", "cloud"]},
+    "gemma4": {"sizes": ["31b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "gemma3": {"sizes": ["4b", "12b", "27b"], "family": "gemma", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "qwen3.5": {"sizes": ["397b"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "qwen3-vl": {"sizes": ["235b", "235b-instruct"], "family": "qwen", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "qwen3-coder": {"sizes": ["480b"], "family": "qwen", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.75},
+    "qwen3-coder-next": {"sizes": [], "family": "qwen", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.75},
+    "qwen3-next": {"sizes": ["80b"], "family": "qwen", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "minimax-m2": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "minimax-m2.7": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "minimax-m2.5": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "minimax-m2.1": {"sizes": [], "family": "minimax", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "glm-5.1": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "glm-5": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "glm-4.7": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "glm-4.6": {"sizes": [], "family": "glm", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "gpt-oss": {"sizes": ["20b", "120b"], "family": "gpt-oss", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "deepseek-v3.1": {"sizes": ["671b"], "family": "deepseek", "capabilities": ["thinking", "cloud"], "usage_multiplier": 1.00},
+    "deepseek-v3.2": {"sizes": [], "family": "deepseek", "capabilities": ["thinking", "cloud"], "usage_multiplier": 1.00},
+    "deepseek-v4-pro": {"sizes": [], "family": "deepseek", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "deepseek-v4-flash": {"sizes": [], "family": "deepseek", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "devstral-small-2": {"sizes": ["24b"], "family": "devstral", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.50},
+    "devstral-2": {"sizes": ["123b"], "family": "devstral", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.75},
+    "nemotron-3-super": {"sizes": [], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "nemotron-3-nano": {"sizes": ["30b"], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.25},
+    "mistral-large-3": {"sizes": ["675b"], "family": "mistral", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "ministral-3": {"sizes": ["3b", "8b", "14b"], "family": "mistral", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.25},
+    "kimi-k2.6": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75, "context_length": 200000},
+    "kimi-k2.5": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "kimi-k2-thinking": {"sizes": [], "family": "kimi", "capabilities": ["thinking", "cloud"], "usage_multiplier": 0.75},
+    "kimi-k2": {"sizes": ["1t"], "family": "kimi", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
+    "cogito-2.1": {"sizes": ["671b"], "family": "cogito", "capabilities": ["thinking", "cloud"], "usage_multiplier": 1.00},
+    "gemini-3-flash-preview": {"sizes": [], "family": "gemini", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
+    "rnj-1": {"sizes": ["8b"], "family": "rnj", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.25},
+    "minimax-m3": {"sizes": [], "family": "minimax", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "nemotron-3-ultra": {"sizes": [], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
 }
 
 
@@ -67,6 +80,100 @@ class OllamaClient:
         self._models_cache: Optional[list[dict]] = None
         self._models_cache_time: float = 0
         self._models_cache_ttl: float = 300.0  # 5 minutes
+
+    @staticmethod
+    def _fetch_usage_level_sync(model_name: str) -> int:
+        """Scrape Ollama.com library page to count usage slots (1-4).
+
+        Handles both top-level model badges and per-tag listings.
+        Returns 0 if the model page can't be found.
+        """
+        import urllib.request
+        base = model_name.split(":")[0]
+        tag = model_name.split(":")[1] if ":" in model_name else None
+        url = f"https://ollama.com/library/{base}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Guanaco/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+
+            # 1) Top-level model badge (unified tier models)
+            top_active = len(re.findall(r'x-test-model-cost-slot-active', html))
+            if top_active > 0:
+                return min(top_active, 4)
+
+            # 2) Per-tag listing — parse each tag's usage slots
+            # The page shows tags in order; split by cost containers and
+            # match each cost section with the preceding tag name.
+            tag_levels: dict[str, int] = {}
+            sections = re.split(r'x-test-model-tag-cost', html)
+            for i in range(len(sections) - 1):
+                # Tag name is in the current section (last command input)
+                inputs = re.findall(r'value="' + re.escape(base) + r':([^"]+)"', sections[i])
+                if not inputs:
+                    continue
+                tag = inputs[-1].replace("-cloud", "")
+                # Cost slots are in the next section, before the next tag name
+                cost_part = re.split(r'value="' + re.escape(base) + r':', sections[i + 1])[0]
+                active = cost_part.count('x-test-model-tag-usage-slot-active')
+                if active > 0:
+                    tag_levels[tag] = active
+
+            # If we were asked for a specific tag, return its level
+            if tag and tag in tag_levels:
+                return min(tag_levels[tag], 4)
+
+            # Otherwise return the max level across all tags (model's highest tier)
+            if tag_levels:
+                return min(max(tag_levels.values()), 4)
+
+            # 3) Raw fallback: count all tag slots
+            raw_active = len(re.findall(r'x-test-model-tag-usage-slot-active', html))
+            return min(raw_active, 4) if raw_active > 0 else 0
+        except Exception:
+            return 0
+
+    async def fetch_usage_levels(self, model_names: list[str]) -> dict[str, int]:
+        """Fetch usage levels for multiple models in parallel.
+
+        Results are cached globally for _USAGE_LEVEL_CACHE_TTL seconds.
+        Returns dict {model_name: level} where level is 1-4 (0 = unknown).
+        """
+        global _USAGE_LEVEL_CACHE, _USAGE_LEVEL_CACHE_TIME
+        now = time.time()
+        # Refresh cache if stale
+        if now - _USAGE_LEVEL_CACHE_TIME > _USAGE_LEVEL_CACHE_TTL:
+            _USAGE_LEVEL_CACHE.clear()
+            _USAGE_LEVEL_CACHE_TIME = now
+
+        # Deduplicate base names
+        to_fetch = []
+        results: dict[str, int] = {}
+        for name in model_names:
+            base = name.split(":")[0]
+            if base in _USAGE_LEVEL_CACHE:
+                results[name] = _USAGE_LEVEL_CACHE[base]
+            elif base not in to_fetch:
+                to_fetch.append(base)
+
+        if to_fetch:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            # Run blocking scrapes in thread pool
+            tasks = [loop.run_in_executor(None, self._fetch_usage_level_sync, m) for m in to_fetch]
+            levels = await asyncio.gather(*tasks, return_exceptions=True)
+            for base, raw in zip(to_fetch, levels):
+                if isinstance(raw, Exception):
+                    _USAGE_LEVEL_CACHE[base] = 0
+                else:
+                    _USAGE_LEVEL_CACHE[base] = raw  # type: ignore[reportArgumentType]
+
+        # Fill in results for all requested names
+        for name in model_names:
+            if name not in results:
+                base = name.split(":")[0]
+                results[name] = _USAGE_LEVEL_CACHE.get(base, 0)
+        return results
 
     async def _get_client(self, api_key_override: Optional[str] = None) -> httpx.AsyncClient:
         """Get or create the httpx client, optionally with a different API key.
@@ -182,38 +289,104 @@ class OllamaClient:
         return model_name in available_names or f"{model_name}-cloud" in available_names
 
     async def get_cloud_models(self) -> list[dict]:
-        """Get list of cloud-capable models with metadata."""
+        """Get list of cloud-capable models with metadata.
+
+        Fetches real usage levels from ollama.com library pages and includes
+        them as usage_multiplier (0.25-1.00) alongside capabilities.
+        """
         models = await self.list_models()
+        # Fetch real usage levels from ollama.com
+        model_names = [m.get("name", m.get("model", "")) for m in models]
+        usage_levels = await self.fetch_usage_levels(model_names)
+
         cloud_models = []
         for m in models:
             name = m.get("name", m.get("model", ""))
             details = m.get("details", {})
-            # Check if model has cloud capability (or is available via cloud API)
-            is_cloud = True  # All models from /api/tags with auth are cloud-available
-            size_info = details.get("parameter_size", "")
-            family = details.get("family", "")
-            quant = details.get("quantization_level", "")
+            level = usage_levels.get(name, 0)
+            multiplier = level * 0.25 if level else self._get_model_multiplier(name)
 
             cloud_models.append({
                 "name": name,
                 "display_name": name.replace("-cloud", ""),
                 "size_bytes": m.get("size", 0),
-                "parameter_size": size_info,
-                "family": family,
-                "quantization": quant,
+                "parameter_size": details.get("parameter_size", ""),
+                "family": details.get("family", ""),
+                "quantization": details.get("quantization_level", ""),
                 "capabilities": self._get_model_capabilities(name),
+                "usage_multiplier": multiplier,
+                "usage_level": level,  # 1-4, 0 = unknown
                 "modified_at": m.get("modified_at", ""),
                 "digest": m.get("digest", "")[:12] if m.get("digest") else "",
             })
         return cloud_models
 
     def _get_model_capabilities(self, model_name: str) -> list[str]:
-        """Get known capabilities for a model name."""
+        """Get known capabilities for a model name. Falls back to name-based inference."""
         base_name = model_name.split(":")[0].replace("-cloud", "")
         if base_name in KNOWN_CLOUD_MODELS:
             return KNOWN_CLOUD_MODELS[base_name].get("capabilities", ["cloud"])
-        # Default capabilities for unknown models
-        return ["cloud"]
+        # ── Inference for unknown new models ──
+        lc = base_name.lower()
+        caps = ["cloud"]
+        # vision: VL models, gemma, gemini, kimi, deepseek (frontier), anything with "vision" in name
+        if any(k in lc for k in ("vl", "vision", "gemma", "gemini", "deepseek")) or lc.startswith("kimi-"):
+            caps.append("vision")
+        # tools: explicit coder/minimax/glm/mistral/gpt-oss/devstral/nemotron families, deepseek
+        if any(k in lc for k in ("coder", "minimax", "glm-", "mistral", "ministral",
+                                  "gpt-oss", "devstral", "nemotron", "deepseek", "rnj-1")):
+            caps.append("tools")
+        # thinking: deepseek, cogito, reasoning, think suffixes, kimi-k2* except k2.5/2.6, any kimi-k* with large sizes
+        if any(k in lc for k in ("deepseek", "cogito", "reason", "-thinking", "think")):
+            caps.append("thinking")
+        elif lc.startswith("kimi-k") and not ("k2.5" in lc or "k2.6" in lc):
+            # kimi-k2 (1t) and future kimi-k3, k4 etc are reasoning models
+            caps.append("thinking")
+        # Deduplicate and sort for consistency
+        return sorted(set(caps))
+
+    def _get_model_multiplier(self, model_name: str) -> float:
+        """Get usage multiplier (cost tier) for a model name. Falls back to size-based inference."""
+        base_name = model_name.split(":")[0].replace("-cloud", "")
+        if base_name in KNOWN_CLOUD_MODELS:
+            return KNOWN_CLOUD_MODELS[base_name].get("usage_multiplier", 1.00)
+        # ── Inference from parameter size hints in the name ──
+        lc = base_name.lower()
+        # Extract size hint like ":30b" or "-30b" from the full model name
+        size_match = None
+        for part in model_name.replace("-cloud", "").split(":"):
+            m = __import__("re").search(r"(\d+)(b|t)", part, __import__("re").I)
+            if m:
+                num = int(m.group(1))
+                unit = m.group(2).lower()
+                # If unit is 't' (trillion), treat as very large
+                if unit == "t":
+                    return 1.00
+                size_match = num
+                break
+        if size_match is not None:
+            if size_match <= 20:
+                return 0.25
+            elif size_match <= 80:
+                return 0.50
+            elif size_match <= 400:
+                return 0.75
+            else:
+                return 1.00
+        # Fallback: use name heuristics when no size hint
+        if any(k in lc for k in ("nano", "mini", "small", "rnj-1")):
+            return 0.25
+        if any(k in lc for k in ("flash", "gemma", "gpt-oss", "minimax", "devstral-small",
+                                  "glm-4.", "super")):
+            return 0.50
+        if any(k in lc for k in ("kimi-k", "qwen3-vl", "qwen3-coder", "qwen3-next",
+                                  "devstral-2", "glm-5")):
+            return 0.75
+        if any(k in lc for k in ("pro", "qwen3.5", "deepseek-v3", "mistral-large",
+                                  "cogito", "kimi-k2:1t")):
+            return 1.00
+        # Safest default — unknown might be expensive
+        return 1.00
 
     # ── Usage / Quota ──
 
@@ -258,6 +431,11 @@ class OllamaClient:
           <span class="text-sm">Weekly usage</span>
           <span class="text-sm">30.9% used</span>
           ... Resets in 3 days
+
+        Per-model breakdown (new feature):
+          <div data-usage-track aria-label="Session usage 19.1% used">
+            <button data-usage-segment data-model="kimi-k2.6" data-requests="180" style="width: 99.7%">
+          </div>
         """
         import re
         result = {}
@@ -299,6 +477,45 @@ class OllamaClient:
             plan_match = re.search(r'class=\"[^"]*capitalize[^"]*\">\s*(pro|max|free|team|starter)\s*</span', html, re.IGNORECASE)
         if plan_match:
             result["plan"] = plan_match.group(1).strip().lower()
+
+        # ── Per-model usage breakdown ──
+        # Find the two data-usage-track containers (session first, weekly second)
+        usage_tracks = re.findall(
+            r'data-usage-track[^\u003e]*aria-label="([^"]*usage[^"]*)"[^\u003e]*\u003e(.*?)\u003c/div\u003e\s*\u003c/div\u003e',
+            html, re.DOTALL | re.IGNORECASE
+        )
+
+        session_breakdown = []
+        weekly_breakdown = []
+
+        for aria_label, track_html in usage_tracks:
+            # Extract segments within this track
+            # Each segment is a <button> with data-model, data-requests, and width in style
+            # Attribute order varies, so find all buttons with data-usage-segment first
+            button_pattern = re.compile(r'(\u003cbutton[^\u003e]*data-usage-segment[^\u003e]*\u003e)', re.DOTALL)
+            buttons = button_pattern.findall(track_html)
+
+            breakdown = []
+            for btn in buttons:
+                model_match = re.search(r'data-model="([^"]+)"', btn)
+                req_match = re.search(r'data-requests="(\d+)"', btn)
+                width_match = re.search(r'width:\s*([\d.]+)%', btn)
+                if model_match and req_match and width_match:
+                    breakdown.append({
+                        "model": model_match.group(1),
+                        "requests": int(req_match.group(1)),
+                        "pct": float(width_match.group(1)),
+                    })
+
+            if 'session' in aria_label.lower():
+                session_breakdown = breakdown
+            elif 'weekly' in aria_label.lower():
+                weekly_breakdown = breakdown
+
+        if session_breakdown:
+            result["session_breakdown"] = session_breakdown
+        if weekly_breakdown:
+            result["weekly_breakdown"] = weekly_breakdown
 
         return result if result else None
 
@@ -430,8 +647,8 @@ class OllamaClient:
                             # Estimate tokens from character count (4 chars ≈ 1 token)
                             estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
                             estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
-                            # Use API-provided completion_tokens if available, otherwise estimated content tokens
-                            final_tokens = completion_tokens or estimated_content_tokens
+                            # Prefer API-provided completion_tokens; otherwise estimate from chars (content + reasoning)
+                            final_tokens = completion_tokens or (estimated_content_tokens + estimated_reasoning_tokens)
                             elapsed = time.time() - start
                             ttft = (first_token_time - start) if first_token_time else None
                             generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed
@@ -479,7 +696,7 @@ class OllamaClient:
                 # Estimate tokens and yield [DONE] + metrics anyway
                 estimated_content_tokens = max(1, content_chars // 4) if content_chars else 0
                 estimated_reasoning_tokens = max(1, reasoning_chars // 4) if reasoning_chars else 0
-                final_tokens = completion_tokens or estimated_content_tokens
+                final_tokens = completion_tokens or (estimated_content_tokens + estimated_reasoning_tokens)
                 elapsed = time.time() - start
                 ttft = (first_token_time - start) if first_token_time else None
                 generation_time = (elapsed - ttft) if ttft and elapsed > ttft else elapsed

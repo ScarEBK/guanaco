@@ -159,10 +159,10 @@ def _run_setup():
     print("\n📡 LLM Configuration")
     print("   Available Ollama Cloud models: qwen3:480b, gpt-oss:120b, deepseek-v3.1, oss120b")
     print("   Also: qwen3.5:122b, glm-5.1, minimax-m2.7, llama4:109b, etc.")
-    reranker = input("Reranker model [oss120b]: ").strip() or "oss120b"
-    scraper = input("Scraper model [qwen3:480b]: ").strip() or "qwen3:480b"
-    summary = input("Summary model [qwen3:480b]: ").strip() or "qwen3:480b"
-    default_model = input("Default chat model [qwen3:480b]: ").strip() or "qwen3:480b"
+    reranker = input("Reranker model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
+    scraper = input("Scraper model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
+    summary = input("Summary model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
+    default_model = input("Default chat model [nemotron-3-nano:30b]: ").strip() or "nemotron-3-nano:30b"
     emulate_anthropic = input("Enable Anthropic /v1/messages emulation? [Y/n]: ").strip().lower() != "n"
     emulate_openai = input("Enable OpenAI /v1/chat/completions? [Y/n]: ").strip().lower() != "n"
 
@@ -378,6 +378,9 @@ def _run_start(args):
     from guanaco.config import load_config, save_config
 
     config = load_config()
+
+    # ── Version sanity check: repo vs installed package ──
+    _check_version_sanity()
 
     if args.host:
         config.router.host = args.host
@@ -800,6 +803,65 @@ def _run_config(args):
         en = "✅" if prov.get("enabled", True) else "❌"
         key_status = "🔑" if prov.get("require_api_key") else ""
         print(f"    {en} {name} {key_status}")
+
+
+def _check_version_sanity():
+    """Warn if the installed package is out of sync with the repo checkout.
+
+    Detects the common footgun where:
+    - install.sh clones to ~/.guanaco/repo and does `pip install -e .`
+    - But later someone edits the repo code without reinstalling
+    - Or installs a different version from PyPI over the editable install
+    """
+    import importlib.util
+    from pathlib import Path
+
+    try:
+        # Where does `guanaco` load from?
+        spec = importlib.util.find_spec("guanaco")
+        if spec is None or spec.origin is None:
+            return  # can't determine, skip
+        installed_path = Path(spec.origin).resolve()
+
+        # Check if it's an editable install (points into a repo checkout)
+        is_editable = False
+        repo_root = None
+        if installed_path.parts:
+            # Walk up to find .git
+            for parent in installed_path.parents:
+                if (parent / ".git").is_dir():
+                    is_editable = True
+                    repo_root = parent
+                    break
+
+        # Read __version__ from the installed package
+        from guanaco import __version__ as installed_version
+
+        if repo_root:
+            # Compare with repo __init__.py version
+            repo_init = repo_root / "guanaco" / "__init__.py"
+            if repo_init.exists():
+                repo_version = "unknown"
+                for line in repo_init.read_text().splitlines():
+                    if '__version__' in line and '=' in line:
+                        repo_version = line.split('=')[1].strip().strip('"').strip("'")
+                        break
+                if repo_version != installed_version:
+                    print(f"⚠️  VERSION MISMATCH DETECTED")
+                    print(f"   Installed package: v{installed_version} at {installed_path}")
+                    print(f"   Repo checkout:     v{repo_version} at {repo_root}")
+                    print(f"   Fix: cd {repo_root} && pip install -e .")
+                    print()
+
+        # Also warn if installed from PyPI (site-packages) rather than editable
+        elif "site-packages" in str(installed_path):
+            print(f"⚠️  Installed from PyPI/site-packages, not editable install:")
+            print(f"   {installed_path}")
+            print(f"   If you're developing, use:  pip install -e .")
+            print()
+
+    except Exception:
+        pass  # Don't crash startup for a sanity check
 
 
 if __name__ == "__main__":

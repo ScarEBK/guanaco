@@ -15,6 +15,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+try:
+    from skimtoken.multilingual_simple import estimate_tokens as _estimate_tokens
+except Exception:
+    _estimate_tokens = None
+
 
 def _default_db_path() -> Path:
     from guanaco.config import get_default_config_dir
@@ -159,6 +164,22 @@ class AnalyticsLogger:
         # Normalize model name so glm-5.1:cloud and glm-5.1 are grouped together
         model = _normalize_model_name(model)
         fallback_for = _normalize_model_name(fallback_for) if fallback_for else fallback_for
+
+        # Fallback: if API returned zeros or None but we have text, estimate tokens
+        # using skimtoken for multilingual/CJK-aware approximation (~15% error).
+        # This prevents silently losing token data when providers omit the usage block.
+        if (not prompt_tokens or prompt_tokens == 0) and input_text:
+            if _estimate_tokens is not None:
+                prompt_tokens = max(1, _estimate_tokens(input_text))
+            else:
+                prompt_tokens = max(1, len(input_text) // 3)
+        if (not completion_tokens or completion_tokens == 0) and output_text:
+            if _estimate_tokens is not None:
+                completion_tokens = max(1, _estimate_tokens(output_text))
+            else:
+                completion_tokens = max(1, len(output_text) // 4)
+        total_tokens = prompt_tokens + completion_tokens
+
         entry_id = str(uuid.uuid4())
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
