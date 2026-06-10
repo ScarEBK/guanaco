@@ -1,0 +1,177 @@
+# Changelog
+
+All notable changes to Guanaco will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [0.5.1] - 2026-06-10
+
+### Fixed
+- **Updater now stashes + hard-resets instead of merge-pulling.** Previously if the working tree had any local modifications (e.g. leftover version-string edits from a prior partial update), `git pull` would abort with a merge conflict and the update silently failed, leaving the old code running. The updater now unconditionally stashes any local changes (including untracked files) and resets to `origin/{branch}` before reinstalling. This makes the **Apply Update** button work reliably on every install, even if the repo is dirty.
+
+### Changed
+- Bumped version to 0.5.1 to ensure existing 0.4.2 → 0.5.x update paths hit the new updater logic immediately.
+
+---
+
+## [0.5.0] - 2026-06-10
+
+### Major Release — Usage Tracking, ROI Dashboard, and Multi-Account Infrastructure
+
+This release represents a significant milestone: Guanaco now tracks every token accurately, displays real cost analytics via a web dashboard, rotates multiple Ollama Cloud accounts, and scrapes live usage tiers from ollama.com instead of guessing.
+
+---
+
+### New Features
+
+#### Token Estimation & Accurate Usage Tracking
+- **skimtoken estimation fallback** (`analytics.py`): When the upstream API (OpenRouter, Ollama Cloud) omits `usage` data in the response, Guanaco now falls back to `skimtoken` for token estimation instead of logging zero tokens. Estimates are ~15% accurate — dramatically better than silently losing usage data.
+- **Proper total_tokens calculation**: Fixed `total_tokens = prompt_tokens + completion_tokens` in analytics logging. Previously some code paths double-counted or omitted totals.
+- **`fallback_reason` audit column**: Added to `request_log` schema. When token estimation is used instead of API-reported usage, the reason is recorded (e.g. `"api_omitted_usage"`, `"stream_missing_usage"`) for later audit.
+- **Input cache-read pricing** (`roi.py`): Tracks `input_cache_read` tokens separately from `input_cache_write`, applying the correct Ollama Cloud discount rate (typically 0.25× of input price for cache hits).
+
+#### ROI Dashboard & Per-Model Analytics
+- **Web dashboard** (`dashboard/`): New FastAPI-mounted dashboard at `/dashboard/` showing:
+  - Total tokens consumed (last 24h, 7d, 30d, all-time)
+  - Per-model token distribution with visual bars
+  - Cost estimates in USD using live OpenRouter pricing
+  - **ROI configuration panel**: Slider for `cache_hit_pct` (default 70%), editable price multipliers per model
+  - **Per-model value scoring**: Each model gets a "value score" based on (capability / cost) ratio, helping users pick the cheapest model for a given task
+- **OpenRouter price fetcher** (`roi.py`): Scrapes current model pricing from `https://openrouter.ai/api/v1/models` with 24h caching. Falls back to hardcoded prices if fetch fails.
+- **Cache-hit discount logic**: ROI calculations apply the user-configured `cache_hit_pct` to reduce effective input costs, reflecting real-world Ollama Cloud behavior where repeated prompts are cached.
+
+#### Real Usage-Level Scraping from ollama.com
+- **`_fetch_usage_level_sync()`** (`client.py`): New synchronous HTML scraper that parses `ollama.com/library/{model}` pages to determine actual GPU usage tiers:
+  - Handles **top-level model badges** (`x-test-model-cost-slot-active`) for unified-tier models
+  - Handles **per-tag listings** (`x-test-model-tag-cost` + `x-test-model-tag-usage-slot-active`) for models with multiple size variants
+  - Returns usage level 1-4, which maps to multiplier 0.25×, 0.50×, 0.75×, 1.00×
+- **`fetch_usage_levels()`**: Async parallel fetcher with **1-hour global cache**. Fetches all library pages concurrently using `asyncio.gather()` with thread-pool execution for the blocking HTTP requests.
+- **Wired into API responses**: Both `/v1/models` (OpenAI-compatible) and `/api/ollama/models` (internal) now return `usage_multiplier` and `usage_level` fields based on scraped live data.
+- **Fixes major heuristic errors**:
+  - `gemma3:4b` and `gemma3:12b`: was 1.00×, now correctly **0.25×** (1 slot)
+  - `gemma3:27b`: was 1.00×, now correctly **0.50×** (2 slots)
+  - `ministral-3`: was 0.75×, now correctly **0.25×** (1 slot)
+  - `qwen3-vl`: stays **0.75×** (3 slots) — heuristic accidentally got this one right
+  - `deepseek-v4-pro`: stays **1.00×** (4 slots)
+
+#### Multi-Account Ollama Cloud Rotation
+- **`accounts.py`**: New module managing multiple Ollama Cloud accounts:
+  - Each account has its own API key + session cookie
+  - Load-balanced request routing based on usage and subscription tier
+  - Quota-aware selection: least-loaded accounts preferred; new/untested accounts get priority for immediate validation
+- **Premium model routing**: Models `kimi-k2.6` and `glm-5.1` restricted to Pro/Max accounts only. Free-tier accounts are skipped for these models.
+- **Per-account usage tracking**: Analytics DB records which account handled each request, enabling per-account cost breakdowns.
+
+#### Model Catalog Expansion
+- Added `minimax-m3` (new MiniMax flagship)
+- Added `nemotron-3-ultra` (NVIDIA enterprise model)
+- Added `kimi-k2.6` with 200k context window support
+
+#### Web Search / Scrape Emulation
+- **Search provider plugins** (`search/providers/`): Modular search backend support:
+  - Brave Search API
+  - Cohere RAG API
+  - Exa (formerly Metaphor)
+  - Firecrawl (web scraping)
+  - Jina AI (neural search)
+  - SearXNG (self-hosted meta-search)
+  - Serper (Google Search API)
+  - Tavily (AI-native search)
+- **Search router** (`search/base.py`): Unified interface — Guanaco presents a single `/search` endpoint regardless of which provider is configured.
+
+### Fixes
+
+#### Config & Install Robustness
+- **Missing `UsageConfig` fields**: Added `last_plan`, `redirect_on_full`, `last_session_reset`, `last_weekly_reset`, `last_checked` to prevent `AttributeError` crashes on configs from v0.4.2 and earlier.
+- **Config migration layer**: `load_config()` now auto-migrates v0.4.2 configs to v0.4.3+ schema on first load. No manual intervention needed.
+- **Package rename**: Renamed PyPI package from `guanaco` → `guanaco-llm-proxy` to avoid collision with an existing `guanaco` package on PyPI.
+- **Install script fixes** (`install.sh`):
+  - Ollama API key validation now uses the correct env var name
+  - Fixed `.env` file write pattern (was writing malformed key=value pairs)
+  - Fixed `grep` pattern for detecting existing config
+- **Startup version sanity check**: Detects repo/venv version mismatch on boot and logs a warning. Prevents confusing "why is `/health` showing the old version?" issues.
+- **systemd service**: Fixed `WorkingDirectory` to point at the actual repo checkout. Added `GUANACO_CONFIG_DIR` env var to service file.
+
+#### Dashboard & Analytics Fixes
+- **Removed broken `usage_multiplier` column**: The analytics DB no longer tracks `usage_multiplier` per request (it was always wrong due to heuristic mismatch). Model-level multipliers are now fetched live from ollama.com.
+- **Backward compat for `SearchConfig`**: Older installs missing search configuration no longer crash on startup.
+
+### Infrastructure
+
+#### CI/CD
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): Runs on every push — lint, type-check, unit tests.
+- **GitHub Actions Release** (`.github/workflows/release.yml`): Automated PyPI publish on tag push.
+
+#### Docker
+- **`Dockerfile.test`**: Containerized smoke-test environment for CI.
+- **`test-local.sh`**: One-command local smoke test — builds Docker image, starts server, hits `/health`, validates version string.
+
+#### Project Hygiene
+- Added `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `LICENSE` (MIT)
+- Added `.gitignore` with Python/venv patterns
+- Added macOS launch agent plist (`com.guanaco.start.plist`)
+- Added systemd service templates (`guanaco.service`, `oct.service`)
+
+### API Changes
+
+#### Added Fields
+- `/v1/models` response now includes:
+  - `usage_multiplier` (float): cost multiplier 0.25-1.00
+  - `usage_level` (int): raw level 1-4, 0 = unknown
+- `/api/ollama/models` response now includes:
+  - `usage_multiplier` (float)
+  - `usage_level` (int)
+
+#### Schema Changes
+- `request_log` table: added `fallback_reason TEXT` column
+- `request_log` table: removed `usage_multiplier` column (was unreliable)
+- New `roi_config` table: stores `cache_hit_pct`, `price_multiplier`, per-model overrides
+
+### Performance
+- **Parallel library scraping**: All ollama.com library pages are fetched concurrently. For a catalog of ~50 models, total scrape time is ~3-5 seconds vs. ~60 seconds sequential.
+- **1-hour cache**: Scraped usage levels are cached globally, so the 3-5 second penalty only hits once per hour.
+- **ROI price cache**: OpenRouter prices cached for 24 hours. Dashboard loads instantly after first visit.
+
+### Deprecated / Removed
+- **Heuristic `_get_model_multiplier()`**: Still exists as fallback when ollama.com scraping fails, but is no longer the primary source. Returns `0.25` for ≤8B, `0.50` for ≤70B, `0.75` for ≤200B, `1.00` for larger.
+- **`usage_multiplier` column in analytics DB**: Dropped. Use `/v1/models` or `/api/ollama/models` to get live multipliers.
+
+### Known Issues
+- **Dev server restart unreliable on isolated instance**: The `uvicorn` process sometimes starts without producing logs. Production (`systemctl restart guanaco.service`) is unaffected.
+- **Library scraper depends on ollama.com DOM**: If ollama.com changes their HTML test attributes (`x-test-model-*`), the scraper will fall back to heuristic. Monitor `/api/ollama/models` for sudden multiplier shifts.
+
+---
+
+## [0.4.2] - 2026-05-15
+
+### New Features
+- Multi-account Ollama Cloud rotation with quota-aware selection
+- Premium model routing (`kimi-k2.6`, `glm-5.1` → Pro/Max only)
+- Per-account usage tracking
+
+---
+
+## [0.4.1] - 2026-05-01
+
+### Fixes
+- Rate-limit retry logic for Ollama Cloud 429 responses
+- SSE streaming stability improvements
+
+---
+
+## [0.4.0] - 2026-04-20
+
+### New Features
+- Initial Ollama Cloud proxy support
+- OpenAI-compatible `/v1/chat/completions` endpoint
+- Token usage tracking with SQLite analytics DB
+- Basic web dashboard
+
+---
+
+## [0.3.9] and earlier
+
+See [GitHub releases](https://github.com/evangit2/guanaco/releases) for earlier versions.
