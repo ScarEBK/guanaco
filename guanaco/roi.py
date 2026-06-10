@@ -57,8 +57,14 @@ FAMILY_MAP = {
 
 
 def _normalized(name: str) -> str:
-    """Strip :cloud / :local suffixes and lower-case."""
+    """Strip provider prefix, ~leaderboard prefix, :cloud/:local suffixes, and lower-case."""
     base = name.split(":")[0].lower()
+    # Strip ~ prefix (leaderboard indicator on OpenRouter)
+    if base.startswith("~"):
+        base = base[1:]
+    # Strip provider/ prefix (e.g. moonshotai/kimi-k2.6 → kimi-k2.6)
+    if "/" in base:
+        base = base.split("/", 1)[1]
     if base.endswith("-cloud"):
         base = base[:-6]
     return base
@@ -100,12 +106,16 @@ class PriceCache:
                 pricing = model.get("pricing", {})
                 prompt = float(pricing.get("prompt", 0) or 0)
                 completion = float(pricing.get("completion", 0) or 0)
+                cache_read = float(pricing.get("input_cache_read", 0) or 0)
                 if prompt > 0 or completion > 0:
                     # Convert from per-token ($/token) to per-million-tokens ($/Mt)
-                    prices[model_id] = {
+                    entry = {
                         "prompt": prompt * 1_000_000,
                         "completion": completion * 1_000_000,
                     }
+                    if cache_read > 0:
+                        entry["input_cache_read"] = cache_read * 1_000_000
+                    prices[model_id] = entry
             self.prices = prices
             self.fetched_at = time.time()
             logger.info(f"Fetched {len(prices)} OpenRouter price entries")
@@ -126,17 +136,17 @@ def _find_best_price(prices: dict, ollama_name: str) -> dict:
     norm = _normalized(ollama_name)
     size = _model_size(ollama_name)
 
-    # 1. Exact normalized match (rare)
-    if norm in prices:
-        return prices[norm]
+    # 1. Exact normalized match (handles provider-prefixed OR IDs like moonshotai/kimi-k2.6)
+    for orouter_id, price_info in prices.items():
+        if _normalized(orouter_id) == norm:
+            return price_info
 
-    # 2. Family prefix match — find cheapest matching family entry
+    # 2. Family prefix match — use raw orouter_id so provider/ prefix matches
     best_family_price = None
     best_family_score = -9999
     for orouter_id, price_info in prices.items():
-        orouter_norm = _normalized(orouter_id)
         for frag, (family_exact, family_prefix) in FAMILY_MAP.items():
-            if frag in norm and family_prefix and family_prefix in orouter_norm:
+            if frag in norm and family_prefix and family_prefix in orouter_id:
                 # Score by size closeness
                 o_size = _model_size(orouter_id)
                 score = -(abs(o_size - size))  # higher = closer size
@@ -175,22 +185,45 @@ def _find_best_price(prices: dict, ollama_name: str) -> dict:
     return {"prompt": 0.0, "completion": 0.0}
 
 
-def _map_usage_to_prices(usage_by_model: dict, prices: dict) -> dict:
+def _map_usage_to_prices(usage_by_model: dict, prices: dict, cache_hit_pct: float = 0.0) -> dict:
+    """
+    Map usage to prices, optionally applying prompt-cache hit discount.
+
+    For models with input_cache_read pricing (e.g. Claude Fable, Qwen, Minimax):
+      - uncached_prompt = prompt_tokens * (1 - cache_hit_pct)
+      - cached_prompt   = prompt_tokens * cache_hit_pct
+      - prompt cost     = uncached_prompt * prompt_price + cached_prompt * cache_read_price
+    """
     result = {}
+    cache_rate = max(0.0, min(100.0, cache_hit_pct)) / 100.0
     for model, usage in usage_by_model.items():
         price = _find_best_price(prices, model)
         pt = usage.get("prompt_tokens", 0)
         ct = usage.get("completion_tokens", 0)
-        prom_mt = pt / 1_000_000
-        comp_mt = ct / 1_000_000
-        cost = (prom_mt * price["prompt"]) + (comp_mt * price["completion"])
+        
+        # Apply cache discount if model supports it
+        if "input_cache_read" in price and cache_rate > 0:
+            uncached_pt = pt * (1 - cache_rate)
+            cached_pt = pt * cache_rate
+            prompt_cost = (uncached_pt / 1_000_000 * price["prompt"]) + (cached_pt / 1_000_000 * price["input_cache_read"])
+            # Store effective prompt price for display
+            effective_prompt = prompt_cost / (pt / 1_000_000) if pt > 0 else price["prompt"]
+        else:
+            prompt_cost = (pt / 1_000_000) * price["prompt"]
+            effective_prompt = price["prompt"]
+        
+        comp_cost = (ct / 1_000_000) * price["completion"]
+        cost = prompt_cost + comp_cost
+
         result[model] = {
             "prompt_tokens": pt,
             "completion_tokens": ct,
-            "prompt_per_mt": price["prompt"],
+            "prompt_per_mt": effective_prompt,
             "completion_per_mt": price["completion"],
             "cost": cost,
-            "matched_price_model": _find_best_price.__module__,  # marker
+            "matched_price_model": _find_best_price.__module__,
+            "cache_applied": "input_cache_read" in price and cache_rate > 0,
+            "cache_read_per_mt": price.get("input_cache_read"),
         }
     return result
 
@@ -205,13 +238,20 @@ def get_usage_from_analytics(db_path: Path | str, since: float = 0) -> tuple[dic
                       IFNULL(SUM(prompt_tokens),0),
                       IFNULL(SUM(completion_tokens),0),
                       IFNULL(SUM(prompt_tokens * IFNULL(usage_multiplier,1.0)),0),
-                      IFNULL(SUM(completion_tokens * IFNULL(usage_multiplier,1.0)),0)
+                      IFNULL(SUM(completion_tokens * IFNULL(usage_multiplier,1.0)),0),
+                      COUNT(*)
                FROM request_log WHERE type='llm' AND ts > ? GROUP BY model""",
             (since,),
         ).fetchall()
         for row in rows:
-            model, pt, ct, w_pt, w_ct = row
-            usage_by_model[model] = {"prompt_tokens": pt, "completion_tokens": ct}
+            model, pt, ct, w_pt, w_ct, req_count = row
+            usage_by_model[model] = {
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "weighted_prompt": w_pt,
+                "weighted_completion": w_ct,
+                "requests": req_count,
+            }
             total_weighted += (w_pt + w_ct)
         conn.close()
     except Exception as e:
@@ -219,10 +259,26 @@ def get_usage_from_analytics(db_path: Path | str, since: float = 0) -> tuple[dic
     return usage_by_model, total_weighted
 
 
+def _get_ollama_week_start() -> float:
+    """Return Unix timestamp of the most recent Sunday at 20:00 UTC.
+
+    Ollama resets its weekly quota every Sunday at 8 PM UTC.
+    """
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    days_since_sunday = now.weekday() + 1 if now.weekday() != 6 else 0
+    sunday = now - timedelta(days=days_since_sunday)
+    reset = sunday.replace(hour=20, minute=0, second=0, microsecond=0)
+    if now < reset:
+        reset -= timedelta(days=7)
+    return reset.timestamp()
+
+
 def calculate_roi(
     db_path: Path | str,
     subscription_monthly: float = 20.0,
     weekly_pct_used: float = 0.0,
+    cache_hit_pct: float = 0.0,
 ) -> dict:
     """
     Calculate subscription value vs OpenRouter pay-as-you-go.
@@ -231,12 +287,14 @@ def calculate_roi(
         db_path: path to analytics SQLite DB
         subscription_monthly: monthly sub cost (20 Pro, 100 Max)
         weekly_pct_used: % of weekly quota consumed (from usage check)
+        cache_hit_pct: estimated % of prompt tokens hitting cache (0-100).
+                       Used for models with input_cache_read pricing on OpenRouter.
 
     Returns dict with:
         total_cost, total_prompt_tokens, total_completion_tokens,
         total_weighted_tokens, weekly_value, monthly_value,
         subscription_monthly, plan ("pro"|"max"), roi_multiplier,
-        weekly_pct_used, prices_stale,
+        weekly_pct_used, cache_hit_pct, prices_stale,
         by_model[] with prompt_tokens, completion_tokens, prompt_per_mt, completion_per_mt, cost,
         unmatched_models[] names with no price match
     """
@@ -246,11 +304,11 @@ def calculate_roi(
     plan = "pro" if subscription_monthly <= 25 else "max"
 
     # 2. Get usage
-    since = time.time() - (7 * 24 * 3600)
+    since = _get_ollama_week_start()
     usage_by_model, total_weighted = get_usage_from_analytics(db_path, since)
 
-    # 3. Map usage to prices
-    priced = _map_usage_to_prices(usage_by_model, prices)
+    # 3. Map usage to prices (with cache hit estimation)
+    priced = _map_usage_to_prices(usage_by_model, prices, cache_hit_pct)
 
     total_cost = sum(m["cost"] for m in priced.values())
     total_prompt = sum(m["prompt_tokens"] for m in priced.values())
@@ -280,6 +338,8 @@ def calculate_roi(
             "completion_per_mt": round(detail["completion_per_mt"], 6),
             "cost": round(detail["cost"], 4),
             "pct_of_total": round((detail["cost"] / total_cost * 100), 2) if total_cost > 0 else 0,
+            "cache_applied": detail.get("cache_applied", False),
+            "cache_read_per_mt": round(detail.get("cache_read_per_mt"), 6) if detail.get("cache_read_per_mt") else None,
         })
     by_model.sort(key=lambda x: x["cost"], reverse=True)
 
@@ -287,6 +347,7 @@ def calculate_roi(
         "total_cost": round(total_cost, 2),
         "total_prompt_tokens": int(total_prompt),
         "total_completion_tokens": int(total_comp),
+        "total_raw_tokens": int(total_prompt + total_comp),
         "total_weighted_tokens": int(total_weighted),
         "weekly_value": round(weekly_value, 2),
         "monthly_value": round(monthly_value, 2),
@@ -294,9 +355,115 @@ def calculate_roi(
         "plan": plan,
         "roi_multiplier": round(roi_multiplier, 2),
         "weekly_pct_used": weekly_pct_used,
+        "cache_hit_pct": cache_hit_pct,
         "prices_stale": prices_stale,
         "by_model": by_model,
         "unmatched_models": unmatched,
+        "price_models_available": len(prices),
+    }
+
+
+def calculate_model_value_comparison(
+    db_path: Path | str,
+    subscription_monthly: float = 20.0,
+    weekly_pct_used: float = 0.0,
+    session_pct_used: float = 0.0,
+    period: str = "weekly",  # "weekly" or "session"
+) -> dict:
+    """
+    Score each model: positive = gave more value than its fair share of sub.
+
+    For each model actually used:
+      - actual_value = what those tokens would cost on OpenRouter
+      - fair_share   = (model's weighted tokens / total weighted tokens) * subscription_cost_for_period
+      - score        = actual_value - fair_share
+                     positive = model punches above its weight (good deal)
+                     negative = model is expensive for its token share (bad deal)
+    """
+    prices = _price_cache.fetch()
+    if not prices:
+        return {"error": "No OpenRouter prices available", "models": []}
+
+    # Determine time window and usage %
+    now = time.time()
+    if period == "session":
+        since = now - (5 * 3600)  # 5-hour session window
+        pct_used = session_pct_used
+    else:
+        since = now - (7 * 24 * 3600)  # 7-day weekly window
+        pct_used = weekly_pct_used
+
+    usage_by_model, total_weighted = get_usage_from_analytics(db_path, since)
+    if not usage_by_model:
+        return {"models": [], "summary": {}}
+
+    # Period subscription cost
+    weekly_sub_cost = subscription_monthly / 4.0
+    if pct_used > 0:
+        period_sub_cost = weekly_sub_cost * (pct_used / 100.0)
+    else:
+        period_sub_cost = weekly_sub_cost
+
+    # Map to prices
+    priced = _map_usage_to_prices(usage_by_model, prices)
+
+    # Per-model scoring
+    models = []
+    total_actual_value = 0.0
+
+    for model, usage in usage_by_model.items():
+        detail = priced.get(model, {})
+        actual_value = detail.get("cost", 0.0)
+        pt = usage.get("prompt_tokens", 0)
+        ct = usage.get("completion_tokens", 0)
+        model_raw = pt + ct
+        w_pt = usage.get("weighted_prompt", 0)
+        w_ct = usage.get("weighted_completion", 0)
+        model_weighted = w_pt + w_ct
+
+        # Fair share of subscription based on WEIGHTED token proportion
+        # (subscription quota is weighted; actual value uses raw tokens at OpenRouter prices)
+        fair_share = (model_weighted / total_weighted * period_sub_cost) if total_weighted > 0 else 0
+        score = actual_value - fair_share
+        score_pct = (score / fair_share * 100) if fair_share > 0 else 0
+
+        total_actual_value += actual_value
+
+        models.append({
+            "model": model,
+            "requests": usage.get("requests", 0),
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
+            "total_tokens": int(model_raw),
+            "weighted_tokens": int(model_weighted),
+            "pct_of_total_tokens": round((model_weighted / total_weighted * 100), 2) if total_weighted > 0 else 0,
+            "actual_value": round(actual_value, 2),
+            "fair_share": round(fair_share, 2),
+            "score": round(score, 2),
+            "score_pct": round(score_pct, 1),
+            "prompt_per_mt": round(detail.get("prompt_per_mt", 0), 6),
+            "completion_per_mt": round(detail.get("completion_per_mt", 0), 6),
+        })
+
+    # Sort by score descending (best value first)
+    models.sort(key=lambda x: x["score"], reverse=True)
+
+    # Summary
+    net_score = total_actual_value - period_sub_cost
+
+    # Compute total raw tokens across all models for the summary
+    total_raw = sum(m.get("prompt_tokens", 0) + m.get("completion_tokens", 0) for m in models)
+
+    return {
+        "period": period,
+        "subscription_monthly": subscription_monthly,
+        "period_sub_cost": round(period_sub_cost, 2),
+        "total_actual_value": round(total_actual_value, 2),
+        "total_raw_tokens": int(total_raw),
+        "total_weighted_tokens": int(total_weighted),
+        "net_score": round(net_score, 2),
+        "models": models,
+        "prices_stale": len(prices) < 10,
         "price_models_available": len(prices),
     }
 

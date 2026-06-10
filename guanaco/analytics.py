@@ -15,6 +15,11 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+try:
+    from skimtoken.multilingual_simple import estimate_tokens as _estimate_tokens
+except Exception:
+    _estimate_tokens = None
+
 
 def _default_db_path() -> Path:
     from guanaco.config import get_default_config_dir
@@ -78,12 +83,7 @@ class AnalyticsLogger:
                     conn.execute(f"ALTER TABLE request_log ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass  # column already exists
-            # Migration: add usage_multiplier column for cost-weighted analytics
-            try:
-                conn.execute("ALTER TABLE request_log ADD COLUMN usage_multiplier REAL DEFAULT 1.0")
-            except sqlite3.OperationalError:
-                pass
-
+            # Migration: add fallback_reason column
             try:
                 conn.execute("ALTER TABLE request_log ADD COLUMN fallback_reason TEXT")
             except sqlite3.OperationalError:
@@ -159,24 +159,27 @@ class AnalyticsLogger:
         output_text: Optional[str] = None,
         fallback_reason: Optional[str] = None,
         account_name: Optional[str] = None,
-        usage_multiplier: float = 1.00,
     ) -> str:
         """Log an LLM request. Returns the log entry ID."""
         # Normalize model name so glm-5.1:cloud and glm-5.1 are grouped together
         model = _normalize_model_name(model)
         fallback_for = _normalize_model_name(fallback_for) if fallback_for else fallback_for
-        # Auto-resolve usage multiplier from model name if not explicitly passed
-        if usage_multiplier == 1.00:
-            try:
-                from guanaco.client import KNOWN_CLOUD_MODELS
-                base = model.split(":")[0]
-                if base in KNOWN_CLOUD_MODELS:
-                    usage_multiplier = KNOWN_CLOUD_MODELS[base].get("usage_multiplier", 1.00)
-            except Exception:
-                pass
-        # Auto-compute total_tokens if not explicitly provided
-        if total_tokens is None or total_tokens == 0:
-            total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+
+        # Fallback: if API returned zeros or None but we have text, estimate tokens
+        # using skimtoken for multilingual/CJK-aware approximation (~15% error).
+        # This prevents silently losing token data when providers omit the usage block.
+        if (not prompt_tokens or prompt_tokens == 0) and input_text:
+            if _estimate_tokens is not None:
+                prompt_tokens = max(1, _estimate_tokens(input_text))
+            else:
+                prompt_tokens = max(1, len(input_text) // 3)
+        if (not completion_tokens or completion_tokens == 0) and output_text:
+            if _estimate_tokens is not None:
+                completion_tokens = max(1, _estimate_tokens(output_text))
+            else:
+                completion_tokens = max(1, len(output_text) // 4)
+        total_tokens = prompt_tokens + completion_tokens
+
         entry_id = str(uuid.uuid4())
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -184,12 +187,12 @@ class AnalyticsLogger:
                    (id, ts, type, model, prompt_tokens, completion_tokens, total_tokens,
                     tps, prompt_tps, ttft_seconds, total_duration_seconds,
                     load_duration_seconds, error, request_id, provider, fallback_for,
-                    source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name, usage_multiplier)
-                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name)
+                   VALUES (?, ?, 'llm', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (entry_id, time.time(), model, prompt_tokens, completion_tokens,
                  total_tokens, tps, prompt_tps, ttft_seconds, total_duration_seconds,
                  load_duration_seconds, error, request_id, provider, fallback_for,
-                 source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name, usage_multiplier),
+                 source_ip, source_port, user_agent, input_text, output_text, fallback_reason, account_name),
             )
         
         # Write plaintext log file if configured
@@ -354,20 +357,12 @@ class AnalyticsLogger:
             search_calls = conn.execute("SELECT COUNT(*) FROM request_log WHERE type='search'").fetchone()[0]
             errors = conn.execute("SELECT COUNT(*) FROM request_log WHERE error IS NOT NULL").fetchone()[0]
 
-            # Token totals (raw)
+            # Token totals
             row = conn.execute(
                 "SELECT COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0), "
                 "COALESCE(SUM(total_tokens),0) FROM request_log WHERE type='llm'"
             ).fetchone()
             prompt_tokens, completion_tokens, total_tokens = row
-
-            # Weighted token totals (usage multiplier applied)
-            weighted_row = conn.execute(
-                "SELECT COALESCE(SUM(prompt_tokens * COALESCE(usage_multiplier,1.0)),0), "
-                "COALESCE(SUM(completion_tokens * COALESCE(usage_multiplier,1.0)),0), "
-                "COALESCE(SUM(total_tokens * COALESCE(usage_multiplier,1.0)),0) FROM request_log WHERE type='llm'"
-            ).fetchone()
-            weighted_prompt, weighted_completion, weighted_total = weighted_row
 
             # Average TPS — based on most recent rows covering ~10k completion tokens
             tps_rows = conn.execute(
@@ -400,7 +395,7 @@ class AnalyticsLogger:
             # Per-model stats — TPS/TTFT from most recent 10k completion tokens per model
             model_rows = conn.execute(
                 """SELECT model, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),
-                   MAX(ts), AVG(COALESCE(usage_multiplier,1.0))
+                   MAX(ts)
                    FROM request_log WHERE type='llm' GROUP BY model ORDER BY MAX(ts) DESC"""
             ).fetchall()
             models = []
@@ -442,7 +437,6 @@ class AnalyticsLogger:
                     "avg_tps": m_avg_tps,
                     "avg_ttft": m_avg_ttft,
                     "last_used": row[4],
-                    "usage_multiplier": round(row[5] or 1.0, 2),
                 })
 
             # Per-provider stats (for search calls)
@@ -563,9 +557,6 @@ class AnalyticsLogger:
                 "prompt_tokens": prompt_tokens or 0,
                 "completion_tokens": completion_tokens or 0,
                 "total_tokens": total_tokens or 0,
-                "weighted_prompt": round(weighted_prompt or 0, 0),
-                "weighted_completion": round(weighted_completion or 0, 0),
-                "weighted_total": round(weighted_total or 0, 0),
                 "avg_tps": avg_tps,
                 "avg_ttft": avg_ttft,
                 "models": models,

@@ -156,15 +156,16 @@ class UsageConfig(BaseModel):
 
 class ROIConfig(BaseModel):
     """Experimental: subscription value comparison vs OpenRouter pay-as-you-go."""
-    enabled: bool = False                # Opt-in — must be explicitly enabled
-    # Subscription tier: free (no value calc — just usage estimate), pro=20, max=100
-    subscription_price: float = 0.0         # Monthly subscription cost in USD
-    # OpenRouter prices are fetched live; this caches them for 1 hour
-    last_price_cache: float = 0.0           # Unix timestamp of last OpenRouter fetch
-    cached_prices: dict[str, dict] = Field(default_factory=dict)  # model_slug -> {prompt, completion}
-    # Last calculated ROI summary (for dashboard display)
-    last_roi_calc: float = 0.0              # Unix timestamp
-    last_roi_detail: dict = Field(default_factory=dict)  # cached summary dict
+    enabled: bool = False
+    subscription_price: float = 0.0
+    # OpenRouter prompt-cache hit estimate (0-100%). Affects cost calc for models with
+    # input_cache_read pricing (e.g. Claude Fable, Qwen, Minimax).
+    cache_hit_pct: float = 0.0
+
+    last_price_cache: float = 0.0
+    cached_prices: dict[str, dict] = Field(default_factory=dict)
+    last_roi_calc: float = 0.0
+    last_roi_detail: dict = Field(default_factory=dict)
 
 class OllamaAccount(BaseModel):
     """A single Ollama Cloud account with its own API key and usage tracking."""

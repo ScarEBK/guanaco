@@ -107,7 +107,7 @@
     .metric .metric-val { font-size: 22px; font-weight: 700; color: var(--accent); }
     .metric .metric-label { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
 
-    .usage-row { display: grid; grid-template-columns: 2fr 0.7fr 0.6fr 1fr 1fr 1fr 0.8fr 0.8fr; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
+    .usage-row { display: grid; grid-template-columns: 2fr 0.8fr 1.2fr 1.2fr 1fr 0.8fr 0.8fr; padding: 10px 14px; background: var(--surface2); border-radius: 8px; margin-bottom: 6px; font-size: 12px; }
     .usage-row.header { font-weight: 600; color: var(--text2); }
     .usage-bar-track { width: 100%; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
     .usage-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease, background 0.3s ease; }
@@ -413,12 +413,6 @@
                 <div class="metric"><div class="metric-val" id="an-errors">0</div><div class="metric-label">Errors</div></div>
                 <div class="metric"><div class="metric-val" id="an-weekly">—</div><div class="metric-label">Fallback Rate</div></div>
             </div>
-            <div class="metric-grid" style="margin-top:8px;">
-                <div class="metric"><div class="metric-val" id="an-wptokens" style="color:var(--accent)">0</div><div class="metric-label">Weighted Prompt</div></div>
-                <div class="metric"><div class="metric-val" id="an-wctokens" style="color:var(--accent)">0</div><div class="metric-label">Weighted Comp</div></div>
-                <div class="metric"><div class="metric-val" id="an-wtokens" style="color:var(--accent)">0</div><div class="metric-label">Weighted Total</div></div>
-                <div class="metric"><div class="metric-val" id="an-mult">1.0x</div><div class="metric-label">Avg Multiplier</div></div>
-            </div>
         </div>
 
         <div class="card">
@@ -430,7 +424,7 @@
                 </div>
             </div>
             <div class="usage-row header">
-                <div>Model</div><div>Reqs</div><div>Mul</div><div>Prompt</div><div>Comp</div><div>W-Total</div><div>Avg TPS</div><div>Avg TTFT</div>
+                <div>Model</div><div>Reqs</div><div>Prompt</div><div>Comp</div><div>Total</div><div>Avg TPS</div><div>Avg TTFT</div>
             </div>
             <div id="model-rows"></div>
         </div>
@@ -551,6 +545,7 @@
                 <div style="margin:0 0 8px 0;">
                     <div class="usage-bar-track"><div class="usage-bar-fill" id="usage-session-bar" style="width:0%;"></div></div>
                     <div class="usage-reset" id="usage-session-reset"></div>
+                    <div id="usage-session-breakdown" style="margin-top:6px;font-size:11px;"></div>
                 </div>
                 <div class="status-row">
                     <span class="status-label">Weekly Usage</span>
@@ -559,6 +554,7 @@
                 <div style="margin:0 0 8px 0;">
                     <div class="usage-bar-track"><div class="usage-bar-fill" id="usage-weekly-bar" style="width:0%;"></div></div>
                     <div class="usage-reset" id="usage-weekly-reset"></div>
+                    <div id="usage-weekly-breakdown" style="margin-top:6px;font-size:11px;"></div>
                 </div>
                 <div class="status-row" id="usage-last-checked-row" style="display:none;"><span class="status-label" style="color:var(--text2);">Last Checked</span><span class="status-value" id="usage-last-checked" style="color:var(--text2);font-size:11px;"></span></div>
             </div>
@@ -616,6 +612,15 @@
                 <input type="number" id="roi-custom-price" placeholder="Custom $/mo" style="width:80px;background:var(--surface3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:12px;" disabled>
                 <button class="btn btn-sm btn-outline" onclick="resetROIData()" style="margin-left:auto;">Reset Data</button>
             </div>
+            <!-- Cache Hit Slider -->
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:10px;background:var(--surface2);border-radius:8px;">
+                <label style="font-size:12px;color:var(--text);white-space:nowrap;">
+                    Est. prompt cache hit
+                    <span style="color:var(--text2);margin-left:4px;" id="cache-hit-value">0%</span>
+                </label>
+                <input type="range" id="cache-hit-slider" min="0" max="100" value="0" oninput="updateCacheHitDisplay()" onchange="setCacheHit()" style="flex:1;accent-color:var(--accent);">
+                <span style="font-size:11px;color:var(--text2);max-width:220px;">Models with OpenRouter cache pricing get discounted accordingly</span>
+            </div>
 
             <!-- Results -->
             <div id="roi-results" style="display:none;">
@@ -625,6 +630,7 @@
                     <div class="metric"><div class="metric-val" id="roi-weekly">$0</div><div class="metric-label">Weekly @ 100%</div></div>
                     <div class="metric"><div class="metric-val" id="roi-monthly">$0</div><div class="metric-label">Monthly Value</div></div>
                     <div class="metric"><div class="metric-val" id="roi-mult">0x</div><div class="metric-label">ROI Multiplier</div></div>
+                    <div class="metric"><div class="metric-val" id="roi-total-tokens">0</div><div class="metric-label">Total Tokens</div></div>
                 </div>
 
                 <!-- Subscription comparison -->
@@ -652,6 +658,17 @@
                     <div>Model</div><div>$ In/Mt</div><div>$ Out/Mt</div><div>Cost</div><div>%</div><div>Tokens</div>
                 </div>
                 <div id="roi-model-rows"></div>
+
+                <!-- Model Value Comparison (score per model) -->
+                <div style="margin-top:16px;margin-bottom:8px;">
+                    <strong style="font-size:13px;">Model Value Score</strong>
+                    <span style="font-size:11px;color:var(--text2);margin-left:8px;">Positive = model gave more value than its fair share of sub cost</span>
+                </div>
+                <div class="usage-row header" style="grid-template-columns: 2fr 1fr 1fr 1.2fr 1.2fr 1fr;">
+                    <div>Model</div><div>Reqs</div><div>Tokens</div><div>Value</div><div>Fair Share</div><div>Score</div>
+                </div>
+                <div id="roi-comparison-rows"></div>
+                <div id="roi-comparison-summary" style="margin-top:8px;padding:8px 10px;border-radius:6px;font-size:12px;background:var(--surface2);display:none;"></div>
 
                 <div id="roi-unmatched" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:11px;background:#f59e0b22;color:#f59e0b;"></div>
                 <div id="roi-stale" style="display:none;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:11px;background:var(--danger);color:#fff;">⚠ OpenRouter prices unavailable. Showing stale/cached data.</div>
@@ -1396,14 +1413,6 @@ function loadAnalytics() {
         document.getElementById('an-search').textContent = (data.search_calls || 0).toLocaleString();
         document.getElementById('an-ptokens').textContent = (data.prompt_tokens || 0).toLocaleString();
         document.getElementById('an-ctokens').textContent = (data.completion_tokens || 0).toLocaleString();
-        document.getElementById('an-wptokens').textContent = (data.weighted_prompt || 0).toLocaleString();
-        document.getElementById('an-wctokens').textContent = (data.weighted_completion || 0).toLocaleString();
-        document.getElementById('an-wtokens').textContent = (data.weighted_total || 0).toLocaleString();
-        // Compute average multiplier from raw vs weighted totals (avoid divide by zero)
-        const rawTotal = (data.prompt_tokens || 0) + (data.completion_tokens || 0);
-        const wTotal = (data.weighted_total || 0);
-        const avgMult = rawTotal > 0 ? (wTotal / rawTotal).toFixed(2) + 'x' : '1.0x';
-        document.getElementById('an-mult').textContent = avgMult;
         document.getElementById('an-tps').textContent = data.avg_tps || 0;
         document.getElementById('an-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
         document.getElementById('an-errors').textContent = (data.errors || 0).toLocaleString();
@@ -1426,10 +1435,9 @@ function loadAnalytics() {
                 <div class="usage-row">
                     <div>${m.model}</div>
                     <div>${m.requests}</div>
-                    <div>${(m.usage_multiplier || 1.0).toFixed(2)}x</div>
                     <div>${(m.prompt_tokens || 0).toLocaleString()}</div>
                     <div>${(m.completion_tokens || 0).toLocaleString()}</div>
-                    <div>${Math.round((m.prompt_tokens || 0) * (m.usage_multiplier || 1.0) + (m.completion_tokens || 0) * (m.usage_multiplier || 1.0)).toLocaleString()}</div>
+                    <div>${((m.prompt_tokens || 0) + (m.completion_tokens || 0)).toLocaleString()}</div>
                     <div>${m.avg_tps || '—'}</div>
                     <div>${m.avg_ttft ? (m.avg_ttft * 1000).toFixed(0) + 'ms' : '—'}</div>
                 </div>
@@ -1457,10 +1465,10 @@ function loadAnalytics() {
             </div>
         `).join('') : '<div style="color:var(--text2);text-align:center;padding:20px;">No errors 🎉</div>';
 
-        // Top stats — show weighted tokens as primary count
+        // Top stats — show raw tokens as primary count
         document.getElementById('stat-requests').textContent = (data.total_requests || 0).toLocaleString();
-        document.getElementById('stat-tokens').textContent = (data.weighted_total || 0).toLocaleString();
-        document.getElementById('stat-tokens').nextElementSibling.textContent = 'Weighted Tokens';
+        document.getElementById('stat-tokens').textContent = (data.total_tokens || 0).toLocaleString();
+        document.getElementById('stat-tokens').nextElementSibling.textContent = 'Tokens';
         document.getElementById('stat-tps').textContent = data.avg_tps || 0;
         document.getElementById('stat-ttft').textContent = data.avg_ttft ? (data.avg_ttft * 1000).toFixed(0) + 'ms' : '—';
         document.getElementById('stat-keys').textContent = KEYS.length;
@@ -1778,6 +1786,8 @@ function checkUsage() {
     const weeklyBar = document.getElementById('usage-weekly-bar');
     const sessionReset = document.getElementById('usage-session-reset');
     const weeklyReset = document.getElementById('usage-weekly-reset');
+    const sessionBreakdown = document.getElementById('usage-session-breakdown');
+    const weeklyBreakdown = document.getElementById('usage-weekly-breakdown');
     const lastCheckedRow = document.getElementById('usage-last-checked-row');
     const lastCheckedEl = document.getElementById('usage-last-checked');
     planEl.textContent = 'Loading...';
@@ -1792,6 +1802,8 @@ function checkUsage() {
             weeklyBar.style.width = '0%';
             sessionReset.textContent = '';
             weeklyReset.textContent = '';
+            sessionBreakdown.innerHTML = '';
+            weeklyBreakdown.innerHTML = '';
             lastCheckedRow.style.display = 'none';
         } else {
             const plan = data.plan ? data.plan.charAt(0).toUpperCase() + data.plan.slice(1) : '—';
@@ -1814,6 +1826,72 @@ function checkUsage() {
             // Reset timers
             sessionReset.textContent = data.session_reset ? '⏱ Resets in ' + data.session_reset : '';
             weeklyReset.textContent = data.weekly_reset ? '⏱ Resets in ' + data.weekly_reset : '';
+            // Per-model breakdowns
+            function renderBreakdown(breakdown, container, idSuffix) {
+                if (!breakdown || breakdown.length === 0) {
+                    container.innerHTML = '';
+                    return;
+                }
+                // Sort by percentage descending
+                const sorted = [...breakdown].sort((a, b) => b.pct - a.pct);
+                
+                // Separate significant vs tiny
+                const significant = [];
+                const tiny = [];
+                for (const b of sorted) {
+                    if (b.pct >= 1.0) {
+                        significant.push(b);
+                    } else {
+                        tiny.push(b);
+                    }
+                }
+                
+                // Always show top 3 at minimum, even if tiny
+                while (significant.length < 3 && tiny.length > 0) {
+                    significant.push(tiny.shift());
+                }
+                
+                const hasMore = tiny.length > 0;
+                const all = [...significant, ...tiny];
+                
+                function makeRow(b, hidden) {
+                    const pctStr = b.pct >= 0.1 ? b.pct.toFixed(1) + '%' : '< 0.1%';
+                    return `
+                        <div class="ub-row ${hidden ? 'ub-hidden' : ''}" style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:11px;border-bottom:1px solid var(--surface2);">
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%;font-family:monospace;font-size:10px;">${b.model}</span>
+                            <span style="color:var(--text2);font-variant-numeric:tabular-nums;">${b.requests.toLocaleString()} req · ${pctStr}</span>
+                        </div>
+                    `;
+                }
+                
+                const topHtml = significant.map(b => makeRow(b, false)).join('');
+                const restHtml = tiny.map(b => makeRow(b, true)).join('');
+                
+                const expandId = 'ub-expand-' + idSuffix;
+                const collapseId = 'ub-collapse-' + idSuffix;
+                
+                container.innerHTML = `
+                    <style>
+                        .ub-row.ub-hidden { display: none !important; }
+                    </style>
+                    <div style="margin-top:6px;">
+                        ${topHtml}
+                        <div id="${expandId}" style="${hasMore ? '' : 'display:none;'}margin-top:4px;">
+                            <button onclick="document.getElementById('${expandId}').style.display='none';document.getElementById('${collapseId}').style.display='';document.querySelectorAll('#${container.id} .ub-row.ub-hidden').forEach(r=>r.classList.remove('ub-hidden'));" style="background:transparent;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:2px 0;">
+                                Show ${tiny.length} more →
+                            </button>
+                        </div>
+                        <div id="${collapseId}" style="display:none;margin-top:4px;">
+                            ${restHtml}
+                            <button onclick="document.getElementById('${expandId}').style.display='';document.getElementById('${collapseId}').style.display='none';document.querySelectorAll('#${container.id} .ub-row:not(.ub-hidden)').forEach((r,i)=>{if(i>=${significant.length-1})r.classList.add('ub-hidden');});" style="background:transparent;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:2px 0;">
+                                ← Collapse
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+            renderBreakdown(data.session_breakdown, sessionBreakdown, 'session');
+            renderBreakdown(data.weekly_breakdown, weeklyBreakdown, 'weekly');
             // Last checked
             if (data.last_checked) {
                 lastCheckedRow.style.display = '';
@@ -1871,6 +1949,8 @@ function clearSessionCookie() {
             document.getElementById('usage-weekly-bar').style.width = '0%';
             document.getElementById('usage-session-reset').textContent = '';
             document.getElementById('usage-weekly-reset').textContent = '';
+            document.getElementById('usage-session-breakdown').innerHTML = '';
+            document.getElementById('usage-weekly-breakdown').innerHTML = '';
         }
         setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 3000);
     });
@@ -2142,12 +2222,15 @@ function _getCapabilities(modelName) {
         'minimax-m2.7': ['cloud','tools','thinking'],
         'minimax-m2.5': ['cloud','tools','thinking'],
         'minimax-m2.1': ['cloud','tools','thinking'],
+        'minimax-m2': ['cloud','tools','thinking'],
+        'minimax-m3': ['cloud','tools','thinking','vision'],
         'devstral-small-2': ['cloud','tools'],
         'devstral-2': ['cloud','tools'],
         'nemotron-3-super': ['cloud','tools','thinking'],
+        'nemotron-3-nano': ['cloud','tools','thinking'],
+        'nemotron-3-ultra': ['cloud','tools','thinking'],
         'mistral-large-3': ['cloud','tools','thinking'],
         'ministral-3': ['cloud','tools'],
-        'nemotron-3-nano': ['cloud','tools','thinking'],
         'kimi-k2.6': ['cloud','tools','thinking','vision'],
         'kimi-k2.5': ['cloud','tools','thinking','vision'],
         'cogito-2.1': ['cloud','thinking'],
@@ -2182,6 +2265,8 @@ function _getMultiplier(modelName) {
         'qwen3.5': 1.00, 'deepseek-v3.1': 1.00, 'deepseek-v3.2': 1.00, 'deepseek-v4-pro': 1.00,
         'mistral-large-3': 1.00, 'cogito-2.1': 1.00, 'kimi-k2': 1.00,
         'deepseek-v4-flash': 0.50, 'gemini-3-flash-preview': 0.50,
+        'minimax-m3': 0.75,
+        'nemotron-3-ultra': 1.00,
     };
     if (mults[base]) return mults[base];
     // ── Inference from size hint ──
@@ -2627,11 +2712,13 @@ async function toggleAutoUpdate() {
 
 let roiEnabled = false;
 let roiPrice = 20.0;
+let roiCacheHit = 0.0;
 
 function loadROIConfig() {
     fetch('/dashboard/api/roi/config').then(r => r.json()).then(data => {
         roiEnabled = data.enabled;
         roiPrice = data.subscription_price || 20.0;
+        roiCacheHit = data.cache_hit_pct || 0.0;
         document.getElementById('roi-enabled').checked = roiEnabled;
         document.getElementById('roi-card').style.display = 'block';
         const planSel = document.getElementById('roi-plan');
@@ -2643,9 +2730,18 @@ function loadROIConfig() {
             customInput.value = roiPrice;
             customInput.disabled = false;
         }
+        
+        // Set cache hit slider
+        const cacheSlider = document.getElementById('cache-hit-slider');
+        const cacheValue = document.getElementById('cache-hit-value');
+        if (cacheSlider && cacheValue) {
+            cacheSlider.value = roiCacheHit;
+            cacheValue.textContent = roiCacheHit + '%';
+        }
+        
         if (roiEnabled) {
             document.getElementById('roi-disabled-msg').style.display = 'none';
-            loadLastROI();
+            calculateROI();
         } else {
             document.getElementById('roi-results').style.display = 'none';
         }
@@ -2659,10 +2755,11 @@ function toggleROI() {
     const enabled = document.getElementById('roi-enabled').checked;
     roiEnabled = enabled;
     const price = parseFloat(document.getElementById('roi-plan').value) || parseFloat(document.getElementById('roi-custom-price').value) || 20.0;
+    const cacheHit = roiCacheHit;
     fetch('/dashboard/api/roi/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ enabled, subscription_price: price })
+        body: JSON.stringify({ enabled, subscription_price: price, cache_hit_pct: cacheHit })
     }).then(r => r.json()).then(data => {
         if (data.status === 'ok') {
             if (enabled) {
@@ -2672,6 +2769,26 @@ function toggleROI() {
                 document.getElementById('roi-results').style.display = 'none';
                 document.getElementById('roi-disabled-msg').style.display = 'block';
             }
+        }
+    });
+}
+
+function updateCacheHitDisplay() {
+    const val = document.getElementById('cache-hit-slider').value;
+    document.getElementById('cache-hit-value').textContent = val + '%';
+}
+
+function setCacheHit() {
+    const val = parseFloat(document.getElementById('cache-hit-slider').value) || 0;
+    roiCacheHit = val;
+    const price = parseFloat(document.getElementById('roi-plan').value) || parseFloat(document.getElementById('roi-custom-price').value) || 20.0;
+    fetch('/dashboard/api/roi/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ enabled: roiEnabled, subscription_price: price, cache_hit_pct: val })
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'ok' && roiEnabled) {
+            calculateROI();
         }
     });
 }
@@ -2712,6 +2829,7 @@ async function calculateROI() {
             return;
         }
         renderROIResults(data);
+        loadROIComparison();
         results.style.display = 'block';
     } catch (e) {
         loading.style.display = 'none';
@@ -2732,6 +2850,12 @@ function renderROIResults(data) {
     const mult = data.roi_multiplier || 0;
     document.getElementById('roi-mult').textContent = mult.toFixed(1) + 'x';
     document.getElementById('roi-mult').style.color = mult > 1 ? 'var(--success)' : (mult > 0.5 ? '#facc15' : 'var(--danger)');
+    // Use total_raw_tokens if available (new calc), otherwise sum from by_model (cached)
+    let rawTotal = data.total_raw_tokens || 0;
+    if (!rawTotal && data.by_model) {
+        rawTotal = data.by_model.reduce((s, m) => s + (m.prompt_tokens || 0) + (m.completion_tokens || 0), 0);
+    }
+    document.getElementById('roi-total-tokens').textContent = rawTotal.toLocaleString();
 
     const rows = document.getElementById('roi-model-rows');
     if (data.by_model && data.by_model.length > 0) {
@@ -2767,6 +2891,61 @@ function renderROIResults(data) {
 
     // Stale prices warning
     document.getElementById('roi-stale').style.display = data.prices_stale ? 'block' : 'none';
+}
+
+// ─── Model Value Comparison ───
+
+async function loadROIComparison() {
+    if (!roiEnabled) return;
+    try {
+        const resp = await fetch('/dashboard/api/roi/comparison?period=weekly');
+        const data = await resp.json();
+        renderROIComparison(data);
+    } catch (e) {
+        document.getElementById('roi-comparison-rows').innerHTML = '<div style="color:var(--danger);text-align:center;padding:12px;">Failed to load comparison</div>';
+    }
+}
+
+function renderROIComparison(data) {
+    const rows = document.getElementById('roi-comparison-rows');
+    const summary = document.getElementById('roi-comparison-summary');
+
+    if (data.error) {
+        rows.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">' + data.error + '</div>';
+        summary.style.display = 'none';
+        return;
+    }
+
+    if (!data.models || data.models.length === 0) {
+        rows.innerHTML = '<div style="color:var(--text2);text-align:center;padding:12px;">No usage data for this period</div>';
+        summary.style.display = 'none';
+        return;
+    }
+
+    rows.innerHTML = data.models.map(m => {
+        const score = m.score || 0;
+        const scoreColor = score > 0 ? 'var(--success)' : (score < 0 ? 'var(--danger)' : 'var(--text2)');
+        const scoreSign = score > 0 ? '+' : '';
+        return '<div class="usage-row" style="grid-template-columns: 2fr 1fr 1fr 1.2fr 1.2fr 1fr; padding: 8px 14px; margin-bottom: 4px; font-size: 12px;">' +
+               '<div style="font-family:monospace;">' + m.model + '</div>' +
+               '<div>' + (m.requests || 0).toLocaleString() + '</div>' +
+               '<div>' + (m.total_tokens || 0).toLocaleString() + '</div>' +
+               '<div>$' + (m.actual_value || 0).toFixed(2) + '</div>' +
+               '<div>$' + (m.fair_share || 0).toFixed(2) + '</div>' +
+               '<div style="color:' + scoreColor + ';font-weight:600;">' + scoreSign + score.toFixed(2) + '</div>' +
+               '</div>';
+    }).join('');
+
+    // Summary bar
+    const net = data.net_score || 0;
+    const netColor = net > 0 ? 'var(--success)' : (net < 0 ? 'var(--danger)' : 'var(--text2)');
+    const netSign = net > 0 ? '+' : '';
+    summary.innerHTML =
+        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+        '<span><strong>Period cost:</strong> $' + (data.period_sub_cost || 0).toFixed(2) + ' · <strong>Total value:</strong> $' + (data.total_actual_value || 0).toFixed(2) + '</span>' +
+        '<span style="color:' + netColor + ';font-weight:600;font-size:13px;">Net: ' + netSign + net.toFixed(2) + '</span>' +
+        '</div>';
+    summary.style.display = 'block';
 }
 
 function loadLastROI() {

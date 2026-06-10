@@ -51,13 +51,15 @@ KNOWN_CLOUD_MODELS = {
     "nemotron-3-nano": {"sizes": ["30b"], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 0.25},
     "mistral-large-3": {"sizes": ["675b"], "family": "mistral", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
     "ministral-3": {"sizes": ["3b", "8b", "14b"], "family": "mistral", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.25},
-    "kimi-k2.6": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "kimi-k2.6": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75, "context_length": 200000},
     "kimi-k2.5": {"sizes": [], "family": "kimi", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
     "kimi-k2-thinking": {"sizes": [], "family": "kimi", "capabilities": ["thinking", "cloud"], "usage_multiplier": 0.75},
     "kimi-k2": {"sizes": ["1t"], "family": "kimi", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
     "cogito-2.1": {"sizes": ["671b"], "family": "cogito", "capabilities": ["thinking", "cloud"], "usage_multiplier": 1.00},
     "gemini-3-flash-preview": {"sizes": [], "family": "gemini", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.50},
     "rnj-1": {"sizes": ["8b"], "family": "rnj", "capabilities": ["tools", "cloud"], "usage_multiplier": 0.25},
+    "minimax-m3": {"sizes": [], "family": "minimax", "capabilities": ["vision", "tools", "thinking", "cloud"], "usage_multiplier": 0.75},
+    "nemotron-3-ultra": {"sizes": [], "family": "nemotron", "capabilities": ["tools", "thinking", "cloud"], "usage_multiplier": 1.00},
 }
 
 
@@ -323,6 +325,11 @@ class OllamaClient:
           <span class="text-sm">Weekly usage</span>
           <span class="text-sm">30.9% used</span>
           ... Resets in 3 days
+
+        Per-model breakdown (new feature):
+          <div data-usage-track aria-label="Session usage 19.1% used">
+            <button data-usage-segment data-model="kimi-k2.6" data-requests="180" style="width: 99.7%">
+          </div>
         """
         import re
         result = {}
@@ -364,6 +371,45 @@ class OllamaClient:
             plan_match = re.search(r'class=\"[^"]*capitalize[^"]*\">\s*(pro|max|free|team|starter)\s*</span', html, re.IGNORECASE)
         if plan_match:
             result["plan"] = plan_match.group(1).strip().lower()
+
+        # ── Per-model usage breakdown ──
+        # Find the two data-usage-track containers (session first, weekly second)
+        usage_tracks = re.findall(
+            r'data-usage-track[^\u003e]*aria-label="([^"]*usage[^"]*)"[^\u003e]*\u003e(.*?)\u003c/div\u003e\s*\u003c/div\u003e',
+            html, re.DOTALL | re.IGNORECASE
+        )
+
+        session_breakdown = []
+        weekly_breakdown = []
+
+        for aria_label, track_html in usage_tracks:
+            # Extract segments within this track
+            # Each segment is a <button> with data-model, data-requests, and width in style
+            # Attribute order varies, so find all buttons with data-usage-segment first
+            button_pattern = re.compile(r'(\u003cbutton[^\u003e]*data-usage-segment[^\u003e]*\u003e)', re.DOTALL)
+            buttons = button_pattern.findall(track_html)
+
+            breakdown = []
+            for btn in buttons:
+                model_match = re.search(r'data-model="([^"]+)"', btn)
+                req_match = re.search(r'data-requests="(\d+)"', btn)
+                width_match = re.search(r'width:\s*([\d.]+)%', btn)
+                if model_match and req_match and width_match:
+                    breakdown.append({
+                        "model": model_match.group(1),
+                        "requests": int(req_match.group(1)),
+                        "pct": float(width_match.group(1)),
+                    })
+
+            if 'session' in aria_label.lower():
+                session_breakdown = breakdown
+            elif 'weekly' in aria_label.lower():
+                weekly_breakdown = breakdown
+
+        if session_breakdown:
+            result["session_breakdown"] = session_breakdown
+        if weekly_breakdown:
+            result["weekly_breakdown"] = weekly_breakdown
 
         return result if result else None
 

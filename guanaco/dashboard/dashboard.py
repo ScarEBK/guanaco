@@ -1237,6 +1237,7 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         return {
             "enabled": rc.enabled,
             "subscription_price": rc.subscription_price,
+            "cache_hit_pct": rc.cache_hit_pct,
             "last_price_cache": rc.last_price_cache,
             "last_roi_calc": rc.last_roi_calc,
             "price_entries_cached": len(rc.cached_prices),
@@ -1250,8 +1251,10 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
             config.roi.enabled = bool(body["enabled"])
         if "subscription_price" in body:
             config.roi.subscription_price = float(body["subscription_price"])
+        if "cache_hit_pct" in body:
+            config.roi.cache_hit_pct = max(0.0, min(100.0, float(body["cache_hit_pct"])))
         save_config(config)
-        return {"status": "ok", "enabled": config.roi.enabled, "subscription_price": config.roi.subscription_price}
+        return {"status": "ok", "enabled": config.roi.enabled, "subscription_price": config.roi.subscription_price, "cache_hit_pct": config.roi.cache_hit_pct}    
 
     @router.get("/api/roi/calculate")
     async def roi_calculate(request: Request):
@@ -1263,13 +1266,14 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         # Determine plan and price from config
         sub_price = config.roi.subscription_price or 20.0
         weekly_pct = config.usage.last_weekly_pct or 0.0
+        cache_pct = config.roi.cache_hit_pct or 0.0
 
         db_path = analytics.db_path if hasattr(analytics, "db_path") else None
         if db_path is None:
             return {"error": "Analytics DB path unavailable"}
 
         from guanaco.roi import calculate_roi
-        result = calculate_roi(db_path, subscription_monthly=sub_price, weekly_pct_used=weekly_pct)
+        result = calculate_roi(db_path, subscription_monthly=sub_price, weekly_pct_used=weekly_pct, cache_hit_pct=cache_pct)
 
         # Persist to config
         config.roi.last_roi_detail = result
@@ -1283,7 +1287,12 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         config = get_config()
         if not config.roi.enabled:
             return {"error": "ROI feature is not enabled"}
-        return config.roi.last_roi_detail or {"error": "No ROI calculated yet. Run Calculate first."}
+        cached = config.roi.last_roi_detail or {}
+        # Inject current cache_hit_pct in case user changed it since calc
+        if isinstance(cached, dict):
+            cached = dict(cached)
+            cached["cache_hit_pct"] = config.roi.get("cache_hit_pct", 0.0)
+        return cached
 
     @router.post("/api/roi/reset")
     async def roi_reset(request: Request):
@@ -1295,5 +1304,32 @@ def create_dashboard_router(key_manager: ApiKeyManager, analytics: AnalyticsLogg
         config.roi.last_price_cache = 0.0
         save_config(config)
         return {"status": "ok", "message": "ROI data reset."}
+
+    @router.get("/api/roi/comparison")
+    async def roi_comparison(request: Request, period: str = "weekly"):
+        """Score each model: positive = gave more value than its fair share of sub cost.
+        period = 'weekly' | 'session'
+        """
+        config = get_config()
+        if not config.roi.enabled:
+            return {"error": "ROI feature is not enabled. Toggle it in the Status tab."}
+
+        sub_price = config.roi.subscription_price or 20.0
+        weekly_pct = config.usage.last_weekly_pct or 0.0
+        session_pct = config.usage.last_session_pct or 0.0
+
+        db_path = analytics.db_path if hasattr(analytics, "db_path") else None
+        if db_path is None:
+            return {"error": "Analytics DB path unavailable"}
+
+        from guanaco.roi import calculate_model_value_comparison
+        result = calculate_model_value_comparison(
+            db_path,
+            subscription_monthly=sub_price,
+            weekly_pct_used=weekly_pct,
+            session_pct_used=session_pct,
+            period=period,
+        )
+        return result
 
     return router
