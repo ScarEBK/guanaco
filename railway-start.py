@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Railway startup script — generates config.yaml from env vars, then launches Guanaco.
 
+Always overwrites config.yaml to ensure env var changes take effect.
+
 Environment variables:
   OLLAMA_API_KEY    — Primary Ollama Cloud API key (required)
   OLLAMA_API_KEY_2  — Secondary Ollama Cloud API key (optional, for dual-account rotation)
@@ -100,7 +102,7 @@ def main():
         },
     }
 
-    # Write config as YAML
+    # Always overwrite config.yaml to ensure env var changes take effect
     import yaml
     with open(config_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False)
@@ -108,9 +110,8 @@ def main():
     print(f"✅ Config written to {config_path}")
     print(f"   Port: {port}")
     print(f"   Accounts: {len(accounts)}")
-    print(f"   Primary key: {primary_key[:8]}...{primary_key[-4:]}")
-    if secondary_key:
-        print(f"   Secondary key: {secondary_key[:8]}...{secondary_key[-4:]}")
+    for acc in accounts:
+        print(f"   - {acc['name']}: {acc['api_key'][:8]}...{acc['api_key'][-4:]}")
 
     # Launch Guanaco via uvicorn with the factory pattern
     import uvicorn
