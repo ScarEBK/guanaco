@@ -687,6 +687,11 @@ class OllamaClient:
                                     prompt_tokens = usage["prompt_tokens"]
                                 if usage.get("completion_tokens"):
                                     completion_tokens = usage["completion_tokens"]
+                            # Also capture Ollama-native fields if present
+                            if chunk_data.get("prompt_eval_count"):
+                                prompt_tokens = chunk_data["prompt_eval_count"]
+                            if chunk_data.get("eval_count"):
+                                completion_tokens = chunk_data["eval_count"]
                         except (json.JSONDecodeError, KeyError):
                             pass
                         yield f"data: {data}\n\n"

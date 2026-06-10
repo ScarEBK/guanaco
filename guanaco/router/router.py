@@ -404,40 +404,35 @@ def create_router(client: OllamaClient, analytics=None, config=None, account_poo
             kwargs["source_port"] = client_host.port
         kwargs["user_agent"] = request.headers.get("user-agent", "")
         
-        # Only include content if history is enabled
-        hist = _config.history if _config else None
-        if hist and hist.enabled:
-            if messages and hist.save_input:
-                # Serialize the messages list to a JSON string
-                try:
-                    if hasattr(messages, '__iter__') and not isinstance(messages, (str, dict)):
-                        # It's a list or iterable of message objects
-                        msgs = []
-                        for m in messages:
-                            if hasattr(m, 'model_dump'):
-                                msgs.append(m.model_dump(exclude_none=True))
-                            elif isinstance(m, dict):
-                                msgs.append(m)
-                            else:
-                                msgs.append(str(m))
-                    elif isinstance(messages, str):
-                        msgs = messages
-                    else:
-                        msgs = str(messages)
-                    if isinstance(msgs, list):
-                        input_str = json.dumps(msgs, ensure_ascii=False)
-                    else:
-                        input_str = str(msgs)
-                    if len(input_str) > hist.max_content_size:
-                        input_str = input_str[:hist.max_content_size] + "\n...[truncated]"
-                    kwargs["input_text"] = input_str
-                    log.debug("History: captured input_text (%d chars)", len(input_str))
-                except Exception as e:
-                    log.warning("History: failed to capture input_text: %s", e)
-            if output_text and hist.save_output:
-                if len(output_text) > hist.max_content_size:
-                    output_text = output_text[:hist.max_content_size] + "\n...[truncated]"
-                kwargs["output_text"] = output_text
+        # Always include content for analytics token estimation, regardless of
+        # history logging settings. The history config only gates whether content
+        # is persisted to log files; token estimation in analytics.py needs
+        # input_text/output_text to estimate when the API omits usage data.
+        try:
+            if messages:
+                if hasattr(messages, '__iter__') and not isinstance(messages, (str, dict)):
+                    msgs = []
+                    for m in messages:
+                        if hasattr(m, 'model_dump'):
+                            msgs.append(m.model_dump(exclude_none=True))
+                        elif isinstance(m, dict):
+                            msgs.append(m)
+                        else:
+                            msgs.append(str(m))
+                elif isinstance(messages, str):
+                    msgs = messages
+                else:
+                    msgs = str(messages)
+                if isinstance(msgs, list):
+                    input_str = json.dumps(msgs, ensure_ascii=False)
+                else:
+                    input_str = str(msgs)
+                kwargs["input_text"] = input_str
+                log.debug("History: captured input_text (%d chars)", len(input_str))
+        except Exception as e:
+            log.warning("History: failed to capture input_text: %s", e)
+        if output_text:
+            kwargs["output_text"] = output_text
         
         return kwargs
 

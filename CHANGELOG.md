@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.2] - 2026-06-10
+
+### Fixed
+- **Token estimation no longer silently disabled when history logging is off.** The `_history_kwargs` helper in the router now unconditionally populates `input_text`/`output_text` for cost tracking, regardless of the `save_history` toggle. Previously, disabling history logging accidentally starved the analytics pipeline of token data.
+- **Ollama native eval counters now used as fallback for OpenAI-style usage.** If an upstream response lacks `prompt_tokens`/`completion_tokens`, we fall back to `prompt_eval_count` / `eval_count` before falling back to tiktoken estimation.
+
+---
+
 ## [0.5.1] - 2026-06-10
 
 ### Fixed
